@@ -50,6 +50,7 @@ const volumeBar = document.getElementById('volumeBar');
 const volumeLabel = document.getElementById('volumeLabel');
 const muteBtn = document.getElementById('muteBtn');
 const waveBtn = document.getElementById('waveBtn');
+const likedBtn = document.getElementById('likedBtn');
 const queuePanel = document.getElementById('queuePanel');
 const queueList = document.getElementById('queueList');
 
@@ -105,6 +106,10 @@ let playlist = [];
 let playlistIndex = -1;
 let playlistMode = null;
 let waveSessionId = null;
+let likedLoading = false;
+let likedIds = new Set();   // id треков, лайкнутых в аккаунте (для сердечек в поиске/очереди)
+let likedIdsPending = new Set(); // id, у которых сейчас в процессе лайк/дизлайк (блокировка повторного клика)
+let likedTotal = 0;   // сколько всего лайков у хоста (для подписи "300 из 847")
 let isLoadingNext = false;
 let isAdvancing = false;
 let isPlayCurrentBusy = false;
@@ -544,6 +549,8 @@ function renderResults(tracks) {
         dur.textContent = formatTime(t.durationMs / 1000);
         item.appendChild(dur);
 
+        item.appendChild(makeLikeButton(t.id));
+
         item.addEventListener('click', () => pickTrackFromSearch(tracks, idx));
         searchResultsEl.appendChild(item);
     });
@@ -614,6 +621,140 @@ async function fetchMoreWave() {
         isLoadingNext = false;
     }
 }
+
+// --- Лайк / дизлайк отдельного трека (независимо от хоста и синка) ---
+async function fetchLikedIds() {
+    try {
+        const ids = await ipcRenderer.invoke('get-liked-ids');
+        likedIds = new Set((ids || []).map(String));
+        logEvent('liked-ids:loaded', { count: likedIds.size });
+        refreshLikeButtons();
+    } catch (err) {
+        logEvent('liked-ids:error', { error: err.message });
+    }
+}
+
+function refreshLikeButtons() {
+    document.querySelectorAll('.trackLikeBtn').forEach((btn) => {
+        const id = btn.dataset.trackId;
+        setLikeButtonState(btn, likedIds.has(id));
+    });
+}
+
+function setLikeButtonState(btn, isLiked) {
+    btn.textContent = isLiked ? '❤️' : '🤍';
+    btn.classList.toggle('liked', isLiked);
+    btn.title = isLiked ? 'Убрать из избранного' : 'Добавить в избранное';
+    btn.setAttribute('aria-pressed', String(isLiked));
+}
+
+function makeLikeButton(trackId) {
+    const id = String(trackId || '');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'trackLikeBtn';
+    btn.dataset.trackId = id;
+    setLikeButtonState(btn, likedIds.has(id));
+
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation(); // не должно триггерить клик по всему пункту (play/jump)
+        toggleLike(id, btn);
+    });
+
+    return btn;
+}
+
+async function toggleLike(trackId, btn) {
+    const id = String(trackId || '');
+    if (!id || likedIdsPending.has(id)) return;
+
+    const wasLiked = likedIds.has(id);
+    likedIdsPending.add(id);
+    if (btn) btn.disabled = true;
+
+    // Оптимистично обновляем сразу все кнопки этого трека (он может быть
+    // одновременно в поиске и в очереди)
+    likedIds[wasLiked ? 'delete' : 'add'](id);
+    refreshLikeButtons();
+
+    try {
+        logEvent('ui:toggleLike', { trackId: id, wasLiked });
+        await ipcRenderer.invoke(wasLiked ? 'unlike-track' : 'like-track', id);
+        logEvent('liked:toggled', { trackId: id, liked: !wasLiked });
+    } catch (err) {
+        logEvent('liked:toggle-error', { trackId: id, error: err.message });
+        // откатываем оптимистичное изменение
+        likedIds[wasLiked ? 'add' : 'delete'](id);
+        refreshLikeButtons();
+        statusEl.textContent = '❤️ Ошибка: ' + err.message;
+    } finally {
+        likedIdsPending.delete(id);
+        if (btn) btn.disabled = false;
+    }
+}
+
+// --- Избранное ---
+async function startLiked(force = false) {
+    if (!isHost) {
+        logEvent('liked:blocked', { reason: 'not host' });
+        statusEl.textContent = '❤️ Избранное может включить только хост';
+        return;
+    }
+    if (likedLoading) return;
+
+    likedLoading = true;
+    likedBtn.disabled = true;
+    const started = Date.now();
+
+    try {
+        logEvent('ui:startLiked', { force });
+        statusEl.textContent = force ? '❤️ Обновляем избранное...' : '❤️ Загружаем избранное...';
+        searchResultsEl.classList.remove('visible');
+
+        const res = await ipcRenderer.invoke('get-liked-tracks', { force });
+        const tracks = res?.tracks || [];
+        const totalLiked = res?.totalLiked || 0;
+
+        logEvent('liked:loaded', {
+            tracksLen: tracks.length,
+            totalLiked,
+            truncated: !!res?.truncated,
+            mainMs: res?.elapsedMs,
+            elapsedMs: Date.now() - started
+        });
+
+        if (!totalLiked) {
+            statusEl.textContent = '❤️ У тебя нет лайкнутых треков';
+            return;
+        }
+        if (!tracks.length) {
+            statusEl.textContent = '❤️ Лайки есть, но ни один трек сейчас недоступен';
+            return;
+        }
+
+        likedTotal = totalLiked;
+        playlist = tracks.slice();
+        playlistIndex = 0;
+        playlistMode = 'liked';
+        waveSessionId = null;
+        tracks.forEach(t => likedIds.add(String(t.id)));
+        updateQueueLabel();
+
+        await playCurrent('liked-start');
+    } catch (err) {
+        logEvent('liked:error', { error: err.message });
+        statusEl.textContent = '❤️ Ошибка: ' + err.message;
+    } finally {
+        likedLoading = false;
+        likedBtn.disabled = false;
+    }
+}
+
+// Прогресс загрузки избранного из main
+ipcRenderer.on('liked-progress', (_e, p) => {
+    if (!likedLoading) return;
+    statusEl.textContent = `❤️ Загружаем избранное: ${p.loaded}/${p.total}...`;
+});
 
 // --- Воспроизведение ---
 async function playCurrent(caller = 'unknown') {
@@ -1119,7 +1260,9 @@ async function loadTrack(track, caller = 'unknown') {
         volumeRow.style.display = 'flex';
 
         document.title = `${track.artists} — ${track.title} | Sync Player`;
-        statusEl.textContent = playlistMode === 'wave' ? '📻 Волна играет' : 'Трек готов';
+        statusEl.textContent = playlistMode === 'wave'
+            ? '📻 Волна играет'
+            : (playlistMode === 'liked' ? '❤️ Избранное играет' : 'Трек готов');
     } catch (err) {
         logEvent('loadTrack:error', { error: err.message });
         statusEl.textContent = 'Ошибка загрузки: ' + err.message;
@@ -1418,8 +1561,14 @@ function updateQueueLabel() {
         queuePanel.classList.remove('visible');
         return;
     }
-    const mode = playlistMode === 'wave' ? '📻 ' : '';
-    trackQueueEl.textContent = `${mode}${playlistIndex + 1} / ${playlist.length}`;
+    let mode = '';
+    if (playlistMode === 'wave') mode = '📻 ';
+    else if (playlistMode === 'liked') mode = '❤️ ';
+    // если лайков больше, чем влезло в очередь — показываем сколько всего
+    const extra = (playlistMode === 'liked' && likedTotal > playlist.length)
+        ? ` из ${likedTotal}`
+        : '';
+    trackQueueEl.textContent = `${mode}${playlistIndex + 1} / ${playlist.length}${extra}`;
     queuePanel.classList.add('visible');
     renderQueue();
 }
@@ -1438,6 +1587,8 @@ function renderQueue() {
 
         const cover = document.createElement('img');
         cover.className = 'queueCover';
+        cover.loading = 'lazy';      // не тянем 300 обложек разом
+        cover.decoding = 'async';
         if (t.cover) cover.src = t.cover;
         item.appendChild(cover);
 
@@ -1460,6 +1611,8 @@ function renderQueue() {
         idxEl.className = 'queueIndex';
         idxEl.textContent = idx + 1;
         item.appendChild(idxEl);
+
+        item.appendChild(makeLikeButton(t.id));
 
         item.addEventListener('click', () => jumpToTrack(idx));
         queueList.appendChild(item);
@@ -1523,6 +1676,8 @@ searchInput.addEventListener('keydown', (e) => {
 });
 
 waveBtn.addEventListener('click', startWave);
+// Shift+клик — форс-обновление кэша избранного
+likedBtn.addEventListener('click', (e) => startLiked(e.shiftKey));
 transferHostBtn.addEventListener('click', transferHost);
 
 modeArtistBtn.addEventListener('click', () => {
@@ -1698,4 +1853,5 @@ if (oauthLoginBtn) {
         logEvent('window:state:error', { error: err.message });
     }
     initWebSocket();
+    void fetchLikedIds(); // фоном, не блокируя запуск
 })();

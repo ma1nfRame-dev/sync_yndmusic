@@ -1340,6 +1340,46 @@ Volume is styled below; track seek is styled in TRACK CARD.
 }
 
 /* =========================================================
+   LIKE BUTTON (поиск + очередь)
+   ========================================================= */
+.trackLikeBtn {
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    font-size: 0.95rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.55;
+    transition: opacity 130ms ease, background 130ms ease, transform 100ms ease;
+}
+
+    .trackLikeBtn:hover {
+        opacity: 1;
+        background: rgba(255,255,255,0.06);
+    }
+
+    .trackLikeBtn:active {
+        transform: scale(0.9);
+    }
+
+    .trackLikeBtn.liked {
+        opacity: 1;
+    }
+
+    .trackLikeBtn:disabled {
+        cursor: default;
+        opacity: 0.35;
+        transform: none;
+    }
+
+/* =========================================================
    UTILITY DOCK
    ========================================================= */
 #utilityDock {
@@ -1621,7 +1661,7 @@ Volume is styled below; track seek is styled in TRACK CARD.
 
     #searchRow {
         display: none;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 7px;
     }
 
@@ -1637,7 +1677,8 @@ Volume is styled below; track seek is styled in TRACK CARD.
     }
 
     #searchRow > #searchBtn,
-    #searchRow > #waveBtn {
+    #searchRow > #waveBtn,
+    #searchRow > #likedBtn {
         width: 100%;
         min-width: 0;
     }

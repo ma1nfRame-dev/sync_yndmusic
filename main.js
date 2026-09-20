@@ -330,6 +330,8 @@ ipcMain.handle('get-track-lyrics', async (_event, trackId) => {
 
 // --- Нормализация трека ---
 function normalizeTrack(t) {
+    // у POST /tracks обложка иногда лежит только на уровне альбома
+    const coverUri = t.coverUri || t.albums?.[0]?.coverUri || null;
     return {
         id: t.id || t.realId,
         title: t.title,
@@ -337,8 +339,8 @@ function normalizeTrack(t) {
         artists: (t.artists || []).map(a => a.name).join(', '),
         album: t.albums?.[0]?.title || '',
         durationMs: t.durationMs || 0,
-        cover: t.coverUri
-            ? 'https://' + t.coverUri.replace('%%', '200x200')
+        cover: coverUri
+            ? 'https://' + coverUri.replace('%%', '200x200')
             : null,
         lyricsAvailable: typeof t.lyricsAvailable === 'boolean'
             ? t.lyricsAvailable
@@ -453,6 +455,174 @@ ipcMain.handle('radio-next', async (_event, sessionId) => {
     return tracks;
 });
 
+// --- Избранное (лайкнутые треки) ---
+const LIKED_BATCH_SIZE = 100;   // сколько треков тянем метаданными за один запрос
+const LIKED_MAX_TRACKS = 300;   // потолок очереди: ~125 КБ JSON, чтобы playlist-update пролез в DataChannel
+
+let likedCache = null;          // кэш полного списка (тянется по кнопке "Избранное")
+let likedIdsCache = null;       // кэш id-шников для отметок "лайкнуто" в поиске/очереди (Set<string>)
+
+// Фолбэк, если POST /tracks не примет батч — тянем поштучно
+async function fetchTracksOneByOne(api, ids) {
+    const settled = await Promise.allSettled(ids.map(id => api.tracks.getSingleTrack(id)));
+    return settled.filter(r => r.status === 'fulfilled').map(r => r.value);
+}
+
+// uid из настроек может быть плейсхолдером ("1" и т.п.) и не совпадать
+// с реальным владельцем токена — тогда любой /users/{uid}/... эндпоинт падает с
+// "ownerOtherwiseUserBindingError: owner must have music sid".
+// Поэтому везде, где нужен uid, берём настоящий из аккаунта, привязанного к токену.
+async function resolveRealUid(api) {
+    try {
+        const status = await api.account.getAccountStatus();
+        const uid = status?.account?.uid || null;
+        if (uid) console.log('❤️ uid из аккаунта:', uid);
+        return uid;
+    } catch (e) {
+        console.log(`❤️ Не смог получить account status (${e.message}), используем uid из настроек`);
+        return null;
+    }
+}
+
+function wrapBindingError(e) {
+    if (String(e.message || '').includes('ownerOtherwiseUserBindingError')) {
+        return new Error('UID не совпадает с владельцем токена. Проверь ⚙️ Настройки — там не должно быть "1" или другой заглушки.');
+    }
+    return e;
+}
+
+ipcMain.handle('get-liked-tracks', async (event, opts = {}) => {
+    const force = !!opts.force;
+
+    if (likedCache && !force) {
+        console.log(`❤️ Отдаём из кэша: ${likedCache.tracks.length} треков`);
+        return likedCache;
+    }
+
+    const started = Date.now();
+    console.log('❤️ Загружаем избранное...');
+
+    const { api } = await getApi();
+    const realUid = await resolveRealUid(api);
+
+    // GET /users/{uid}/likes/tracks — отдаёт ВЕСЬ список разом, но только {id, albumId, timestamp}
+    let lib;
+    try {
+        lib = await api.user.getLikedTracks(realUid);
+    } catch (e) {
+        throw wrapBindingError(e);
+    }
+    const metas = lib?.library?.tracks || [];
+    const totalLiked = metas.length;
+
+    // Заодно обновляем кэш id-шников — он уже у нас в руках
+    likedIdsCache = new Set(metas.map(m => String(m.id)).filter(Boolean));
+
+    if (!totalLiked) {
+        console.log('❤️ Лайкнутых треков нет');
+        likedCache = { tracks: [], totalLiked: 0, truncated: false, elapsedMs: Date.now() - started };
+        return likedCache;
+    }
+
+    // Берём самые свежие лайки — Яндекс отдаёт их первыми
+    const ids = metas.slice(0, LIKED_MAX_TRACKS).map(m => String(m.id)).filter(Boolean);
+    const truncated = totalLiked > ids.length;
+    console.log(`❤️ Лайков всего: ${totalLiked}, берём: ${ids.length}${truncated ? ' (обрезано)' : ''}`);
+
+    const tracks = [];
+
+    for (let i = 0; i < ids.length; i += LIKED_BATCH_SIZE) {
+        const batch = ids.slice(i, i + LIKED_BATCH_SIZE);
+        let raw = [];
+
+        try {
+            raw = await api.tracks.getTracks(batch);
+        } catch (e) {
+            console.log(`❤️ Ошибка: батч ${i}–${i + batch.length} не загрузился (${e.message}), пробуем поштучно`);
+            try {
+                raw = await fetchTracksOneByOne(api, batch);
+            } catch (e2) {
+                console.log(`❤️ Ошибка: и поштучно не вышло (${e2.message}), пропускаем батч`);
+                raw = [];
+            }
+        }
+
+        for (const t of (raw || [])) {
+            if (!t || t.available === false) continue;
+            if (!(t.id || t.realId)) continue;
+            tracks.push(normalizeTrack(t));
+        }
+
+        const loaded = Math.min(i + batch.length, ids.length);
+        if (!event.sender.isDestroyed()) {
+            event.sender.send('liked-progress', { loaded, total: ids.length });
+        }
+    }
+
+    const elapsedMs = Date.now() - started;
+    console.log(`❤️ Загружено ${tracks.length} треков за ${elapsedMs}мс`);
+
+    likedCache = { tracks, totalLiked, truncated, elapsedMs };
+    return likedCache;
+});
+
+
+// --- Лайк / дизлайк трека ---
+
+// Лёгкий список id избранного — для отметок в поиске/очереди.
+// force игнорируется намеренно: список маленький (одни id), тянуть его лишний
+// раз недорого, а свежесть тут важнее кэша.
+ipcMain.handle('get-liked-ids', async () => {
+    try {
+        const { api } = await getApi();
+        const realUid = await resolveRealUid(api);
+        const lib = await api.user.getLikedTracks(realUid);
+        const metas = lib?.library?.tracks || [];
+        likedIdsCache = new Set(metas.map(m => String(m.id)).filter(Boolean));
+        return Array.from(likedIdsCache);
+    } catch (e) {
+        throw wrapBindingError(e);
+    }
+});
+
+ipcMain.handle('like-track', async (_event, trackId) => {
+    const id = String(trackId || '').trim();
+    if (!id) throw new Error('Пустой ID трека');
+
+    const { api } = await getApi();
+    const realUid = await resolveRealUid(api);
+
+    try {
+        await api.user.likeTracks([id], realUid);
+    } catch (e) {
+        throw wrapBindingError(e);
+    }
+
+    if (likedIdsCache) likedIdsCache.add(id);
+    likedCache = null; // полный список избранного теперь неактуален
+    console.log('❤️ Лайкнут трек', id);
+    return { success: true };
+});
+
+ipcMain.handle('unlike-track', async (_event, trackId) => {
+    const id = String(trackId || '').trim();
+    if (!id) throw new Error('Пустой ID трека');
+
+    const { api } = await getApi();
+    const realUid = await resolveRealUid(api);
+
+    try {
+        await api.user.unlikeTracks([id], realUid);
+    } catch (e) {
+        throw wrapBindingError(e);
+    }
+
+    if (likedIdsCache) likedIdsCache.delete(id);
+    likedCache = null; // полный список избранного теперь неактуален
+    console.log('💔 Убран лайк с трека', id);
+    return { success: true };
+});
+
 // --- Настройки ---
 ipcMain.handle('settings-load', async () => {
     const s = loadSettings();
@@ -477,6 +647,8 @@ ipcMain.handle('settings-save', async (_event, config) => {
     });
     if (ok) {
         apiPromise = null;
+        likedCache = null;    // токен/uid могли смениться — кэш избранного невалиден
+        likedIdsCache = null;
         console.log('✅ Настройки сохранены в', getSettingsPath());
         return { success: true };
     }
@@ -514,6 +686,8 @@ ipcMain.handle('oauth-login', async () => {
                     s.ymToken = accessToken;
                     saveSettings(s);
                     apiPromise = null;
+                    likedCache = null;
+                    likedIdsCache = null;
                     resolve({ success: true, accessToken, expiresIn });
                 } else {
                     resolve({ success: false, error: 'Токен не найден в URL' });
