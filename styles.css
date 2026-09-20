@@ -725,6 +725,23 @@ button {
             box-shadow: 0 8px 22px rgba(48,115,208,0.10), inset 0 1px rgba(255,255,255,0.12);
         }
 
+    /* Слушатель видит только кнопку текста; управление воспроизведением остаётся у хоста. */
+    #playRow.listener-mode {
+        justify-content: center;
+    }
+
+    #playRow .hostOnlyControl {
+        display: inline-flex;
+    }
+
+    #playRow.listener-mode .hostOnlyControl {
+        display: none !important;
+    }
+
+    #playRow.listener-mode .lyricsAction {
+        margin-left: 0;
+    }
+
 .lyricsActionIcon {
     display: inline-grid;
     place-items: center;
@@ -1528,6 +1545,11 @@ button {
             display: grid;
         }
 
+        #playRow.listener-mode.visible {
+            display: flex;
+            justify-content: center;
+        }
+
         #playRow button,
         #playRow #playBtn,
         #playRow #pauseBtn {
@@ -1564,6 +1586,12 @@ button {
         width: 100%;
         min-width: 0;
         margin-left: 0;
+    }
+
+    #playRow.listener-mode .lyricsAction {
+        width: auto;
+        min-width: 116px;
+        flex: 0 0 auto;
     }
 
     #lyricsPanel {

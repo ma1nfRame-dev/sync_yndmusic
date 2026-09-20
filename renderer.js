@@ -110,6 +110,8 @@ let isAdvancing = false;
 let isPlayCurrentBusy = false;
 let currentTrackForLyrics = null;
 let lyricsRequestId = 0;
+let currentLyricsResult = null;
+const remoteLyricsCache = new Map();
 
 const rtcConfig = {
     iceServers: [
@@ -295,11 +297,20 @@ function updateDynamicBackdrop(cover) {
 
 // --- UI обновление по роли ---
 function updateUIForRole() {
+    const hostOnlyControls = [playBtn, pauseBtn, prevBtn, nextBtn];
+
+    hostOnlyControls.forEach((btn) => {
+        if (!btn) return;
+        btn.classList.toggle('hostOnlyControl', !isHost);
+        btn.setAttribute('aria-hidden', isHost ? 'false' : 'true');
+    });
+
     if (isHost) {
         hostBadge.textContent = '👑 Хост';
         hostBadge.style.color = '#1e88e5';
         searchRow.classList.add('visible');
         playRow.classList.add('visible');
+        playRow.classList.remove('listener-mode');
         transferHostBtn.style.display = 'inline-block';
         queuePanel.classList.remove('readonly');
         if (audioReady) seekBar.disabled = false;
@@ -307,11 +318,15 @@ function updateUIForRole() {
         hostBadge.textContent = '🎧 Слушатель';
         hostBadge.style.color = '#888';
         searchRow.classList.remove('visible');
-        playRow.classList.remove('visible');
+        playRow.classList.toggle('visible', Boolean(currentTrackForLyrics));
+        playRow.classList.add('listener-mode');
         transferHostBtn.style.display = 'none';
         queuePanel.classList.add('readonly');
         seekBar.disabled = true;
     }
+
+    // На стороне слушателя строка управления остаётся только ради кнопки текста.
+    setLyricsButtonVisible(Boolean(currentTrackForLyrics));
     logEvent('ui:role-updated', { isHost, role });
 }
 
@@ -415,6 +430,13 @@ function setupDataChannel() {
         updateUIForRole();
         runClockSync();
         setInterval(runClockSync, RESYNC_INTERVAL_MS);
+
+        if (isHost) {
+            const track = playlist[playlistIndex] || currentTrackForLyrics;
+            if (track?.id) {
+                void fetchLyricsForHost(track);
+            }
+        }
     };
 
     dataChannel.onclose = () => logEvent('dc:close', { state: dataChannel.readyState });
@@ -594,6 +616,9 @@ async function playCurrent(caller = 'unknown') {
         updateQueueLabel();
 
         if (isHost) {
+            // Подтягиваем lyrics на стороне хоста заранее и отправляем их слушателю.
+            // Музыка при этом не ждёт окончания запроса lyrics.
+            void fetchLyricsForHost(track);
             setTimeout(() => sendCommand('play', 0, 'autoplay-after-load'), 1500);
         }
     } finally {
@@ -648,6 +673,11 @@ function setLyricsButtonVisible(visible) {
     if (!lyricsBtn) return;
     lyricsBtn.hidden = !visible;
     if (!visible) lyricsBtn.classList.remove('active');
+
+    if (!isHost) {
+        playRow.classList.toggle('visible', Boolean(visible));
+        playRow.classList.toggle('listener-mode', Boolean(visible));
+    }
 }
 
 function closeLyricsPanel() {
@@ -695,7 +725,6 @@ function parseLrc(lrcText) {
         const firstTagEnd = tags.at(-1).index + tags.at(-1)[0].length;
         let lineText = rawLine.slice(firstTagEnd).trim();
 
-        // Поддерживаем Enhanced LRC: [mm:ss.xx] <mm:ss.xx>слово...
         const wordRegex = /<(\d{1,3}):(\d{2}(?:\.\d+)?)>/g;
         const wordTags = [...lineText.matchAll(wordRegex)];
         let words = [];
@@ -863,6 +892,7 @@ function updateKaraokeUI(currentTime = audio.currentTime) {
 
 function resetLyricsForTrack(track) {
     currentTrackForLyrics = track || null;
+    currentLyricsResult = null;
     lyricsRequestId++;
     resetKaraoke();
 
@@ -874,12 +904,89 @@ function resetLyricsForTrack(track) {
 
     closeLyricsPanel();
     setLyricsState('Нажми «Текст», чтобы открыть караоке.', '');
-
-    // Не доверяем заранее переданному lyricsAvailable: у разных ответов
-    // Яндекс Музыки это поле может отсутствовать или быть устаревшим.
-    // Кнопка показывается для загруженного трека, а реальная проверка
-    // наличия текста выполняется через get-track-lyrics по нажатию.
     setLyricsButtonVisible(Boolean(track));
+}
+
+function applyLyricsResult(result, { preservePanel = true } = {}) {
+    currentLyricsResult = result || null;
+
+    if (!result?.available || !result.text?.trim()) {
+        setLyricsState('У этого трека нет доступного текста в Яндекс Музыке.', 'error');
+        return false;
+    }
+
+    if (result.synced || result.format === 'lrc') {
+        renderKaraokeLyrics(result.text);
+
+        if (karaokeReady) {
+            setLyricsState('Караоке', 'success');
+            updateKaraokeUI(audio.currentTime);
+        } else {
+            renderPlainLyrics(result.text);
+            setLyricsState('Синхронизированный текст недоступен, показан обычный текст.', '');
+        }
+    } else {
+        renderPlainLyrics(result.text);
+        setLyricsState('Синхронизация текста недоступна — показан обычный текст.', '');
+    }
+
+    return true;
+}
+
+async function fetchLyricsForHost(track) {
+    if (!isHost || !track?.id) return null;
+
+    const key = String(track.id);
+    if (remoteLyricsCache.has(key)) {
+        const cached = remoteLyricsCache.get(key);
+        dcSend({ type: 'lyrics-update', trackId: key, result: cached });
+        return cached;
+    }
+
+    try {
+        const result = await ipcRenderer.invoke('get-track-lyrics', track.id);
+        const normalizedResult = result || { available: false, synced: false };
+        remoteLyricsCache.set(key, normalizedResult);
+
+        if (currentTrackForLyrics?.id && String(currentTrackForLyrics.id) === key) {
+            currentLyricsResult = normalizedResult;
+        }
+
+        dcSend({
+            type: 'lyrics-update',
+            trackId: key,
+            result: normalizedResult
+        });
+
+        logEvent('lyrics:broadcast', { trackId: key, available: Boolean(normalizedResult?.available), synced: Boolean(normalizedResult?.synced) });
+        return normalizedResult;
+    } catch (err) {
+        const result = {
+            available: false,
+            synced: false,
+            error: err.message
+        };
+
+        remoteLyricsCache.set(key, result);
+        dcSend({ type: 'lyrics-update', trackId: key, result });
+        logEvent('lyrics:host-fetch:error', { trackId: key, error: err.message });
+        return result;
+    }
+}
+
+function sendLyricsRequestToHost(track) {
+    if (!track?.id) return false;
+
+    const sent = dcSend({
+        type: 'lyrics-request',
+        trackId: String(track.id)
+    });
+
+    if (sent) {
+        logEvent('lyrics:request-sent', { trackId: String(track.id) });
+    }
+
+    return sent;
 }
 
 async function openLyricsForCurrentTrack() {
@@ -894,34 +1001,31 @@ async function openLyricsForCurrentTrack() {
         lyricsTrackNameEl.textContent = `${track.artists || ''} — ${track.title || ''}`.replace(/^\s*—\s*|\s*—\s*$/g, '');
     }
 
-    setLyricsState('Загружаем караоке…');
     if (lyricsContentEl) lyricsContentEl.innerHTML = '';
 
+    const cached = remoteLyricsCache.get(String(track.id));
+
+    // Хост берёт текст из своего main-процесса.
+    // Слушатель сначала использует то, что ему прислал хост.
+    if (cached) {
+        applyLyricsResult(cached);
+        return;
+    }
+
+    if (!isHost) {
+        setLyricsState('Запрашиваем караоке у хоста…');
+        sendLyricsRequestToHost(track);
+        return;
+    }
+
+    setLyricsState('Загружаем караоке…');
+
     try {
-        const result = await ipcRenderer.invoke('get-track-lyrics', track.id);
+        const result = await fetchLyricsForHost(track);
 
         if (requestId !== lyricsRequestId || currentTrackForLyrics?.id !== track.id) return;
 
-        if (!result?.available || !result.text?.trim()) {
-            setLyricsState('У этого трека нет доступного текста в Яндекс Музыке.', 'error');
-            lyricsBtn.classList.remove('active');
-            return;
-        }
-
-        if (result.synced || result.format === 'lrc') {
-            renderKaraokeLyrics(result.text);
-
-            if (karaokeReady) {
-                setLyricsState('Караоке', 'success');
-                updateKaraokeUI(audio.currentTime);
-            } else {
-                renderPlainLyrics(result.text);
-                setLyricsState('Синхронизированный текст недоступен, показан обычный текст.', '');
-            }
-        } else {
-            renderPlainLyrics(result.text);
-            setLyricsState('Синхронизация текста недоступна — показан обычный текст.', '');
-        }
+        applyLyricsResult(result);
     } catch (err) {
         logEvent('lyrics:load:error', { trackId: track.id, error: err.message });
         if (requestId !== lyricsRequestId || currentTrackForLyrics?.id !== track.id) return;
@@ -1036,6 +1140,53 @@ function handleMessage(msg) {
         return;
     }
 
+    if (msg.type === 'lyrics-update') {
+        const trackId = String(msg.trackId || '');
+        if (!trackId) return;
+
+        const result = msg.result || { available: false, synced: false };
+        remoteLyricsCache.set(trackId, result);
+
+        logEvent('handle:lyrics-update', {
+            trackId,
+            available: Boolean(result.available),
+            synced: Boolean(result.synced)
+        });
+
+        if (currentTrackForLyrics?.id && String(currentTrackForLyrics.id) === trackId) {
+            currentLyricsResult = result;
+            if (!lyricsPanel.hidden) {
+                applyLyricsResult(result);
+            } else if (result.available) {
+                setLyricsState(result.synced ? 'Караоке готово.' : 'Текст готов.');
+            }
+        }
+        return;
+    }
+
+    if (msg.type === 'lyrics-request') {
+        if (!isHost) return;
+
+        const trackId = String(msg.trackId || '');
+        if (!trackId) return;
+
+        const track = currentTrackForLyrics?.id && String(currentTrackForLyrics.id) === trackId
+            ? currentTrackForLyrics
+            : playlist.find(t => String(t?.id) === trackId);
+
+        if (!track) {
+            dcSend({
+                type: 'lyrics-update',
+                trackId,
+                result: { available: false, synced: false }
+            });
+            return;
+        }
+
+        void fetchLyricsForHost(track);
+        return;
+    }
+
     if (msg.type === 'host-changed') {
         logEvent('handle:host-changed', { newHostRole: msg.newHostRole, myRole: role });
         isHost = (msg.newHostRole === role);
@@ -1046,6 +1197,13 @@ function handleMessage(msg) {
             playlistMode = msg.playlistMode || null;
             waveSessionId = msg.waveSessionId || null;
             updateQueueLabel();
+        }
+
+        if (msg.lyricsTrackId && msg.lyricsResult) {
+            remoteLyricsCache.set(String(msg.lyricsTrackId), msg.lyricsResult);
+            if (currentTrackForLyrics?.id && String(currentTrackForLyrics.id) === String(msg.lyricsTrackId)) {
+                currentLyricsResult = msg.lyricsResult;
+            }
         }
 
         updateUIForRole();
@@ -1143,7 +1301,9 @@ function startPositionTimer() {
 
 function stopPositionTimer() {
     if (positionTimer) clearInterval(positionTimer);
+    positionTimer = null;
     timeCurrentEl.textContent = formatTime(audio.currentTime);
+    updateKaraokeUI(audio.currentTime);
 }
 
 // --- Аудио-события ---
@@ -1312,7 +1472,9 @@ function transferHost() {
         playlist,
         playlistIndex,
         playlistMode,
-        waveSessionId
+        waveSessionId,
+        lyricsTrackId: currentTrackForLyrics?.id ? String(currentTrackForLyrics.id) : null,
+        lyricsResult: currentLyricsResult || null
     });
 
     isHost = false;
