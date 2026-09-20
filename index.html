@@ -27,7 +27,7 @@
             flex-wrap: wrap;
         }
 
-            .controls input {
+            .controls input[type="text"] {
                 flex: 1;
                 min-width: 300px;
                 padding: 8px;
@@ -61,16 +61,67 @@
             font-size: 0.9em;
         }
 
-        #position {
+        /* Прогресс-бар */
+        #seekRow {
+            display: none;
+            align-items: center;
+            gap: 12px;
+            margin: 15px 0;
             font-family: monospace;
+            font-size: 0.95em;
         }
+
+            #seekRow.visible {
+                display: flex;
+            }
+
+        #seekBar {
+            flex: 1;
+            -webkit-appearance: none;
+            appearance: none;
+            height: 6px;
+            background: #ddd;
+            border-radius: 3px;
+            outline: none;
+            cursor: pointer;
+        }
+
+            #seekBar::-webkit-slider-thumb {
+                -webkit-appearance: none;
+                appearance: none;
+                width: 16px;
+                height: 16px;
+                border-radius: 50%;
+                background: #1e88e5;
+                cursor: pointer;
+                transition: transform 0.1s;
+            }
+
+                #seekBar::-webkit-slider-thumb:hover {
+                    transform: scale(1.2);
+                }
+
+            #seekBar:disabled {
+                cursor: not-allowed;
+                opacity: 0.5;
+            }
+
+                #seekBar:disabled::-webkit-slider-thumb {
+                    cursor: not-allowed;
+                    background: #999;
+                }
     </style>
 </head>
 <body>
     <h1>Sync Player</h1>
     <p id="status">Ожидание подключения...</p>
     <div id="trackInfo">Трек не загружен</div>
-    <p id="position">Позиция: 0.00с</p>
+
+    <div id="seekRow">
+        <span id="timeCurrent">0:00</span>
+        <input type="range" id="seekBar" min="0" max="1" step="0.01" value="0" disabled />
+        <span id="timeTotal">0:00</span>
+    </div>
 
     <div class="controls" id="loadRow">
         <input id="trackUrlInput" type="text" placeholder="https://music.yandex.ru/track/35244922" value="https://music.yandex.ru/track/35244922" />

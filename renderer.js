@@ -4,8 +4,11 @@ const ROOM = 'test-room-1';
 const SIGNALING_URL = 'ws://localhost:8080';
 
 const statusEl = document.getElementById('status');
-const positionEl = document.getElementById('position');
 const trackInfoEl = document.getElementById('trackInfo');
+const seekRow = document.getElementById('seekRow');
+const seekBar = document.getElementById('seekBar');
+const timeCurrentEl = document.getElementById('timeCurrent');
+const timeTotalEl = document.getElementById('timeTotal');
 const loadRow = document.getElementById('loadRow');
 const playRow = document.getElementById('playRow');
 const trackUrlInput = document.getElementById('trackUrlInput');
@@ -16,7 +19,7 @@ const pauseBtn = document.getElementById('pauseBtn');
 const audio = new Audio();
 audio.crossOrigin = 'anonymous';
 let audioReady = false;
-let currentTrackUrl = null;
+let isSeeking = false; // пользователь тащит ползунок
 
 let ws;
 let pc = null;
@@ -38,6 +41,14 @@ const rtcConfig = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 };
 
+// --- Вспомогательные ---
+function formatTime(sec) {
+  if (!isFinite(sec) || sec < 0) sec = 0;
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 // --- Signaling ---
 ws = new WebSocket(SIGNALING_URL);
 
@@ -52,9 +63,7 @@ ws.onmessage = async (event) => {
   if (msg.type === 'role') {
     role = msg.role;
     isHost = role === 'offerer';
-    if (isHost) {
-      loadRow.classList.add('visible');
-    }
+    if (isHost) loadRow.classList.add('visible');
     return;
   }
 
@@ -123,22 +132,20 @@ function setupDataChannel() {
 async function loadTrack(trackUrl) {
   try {
     audioReady = false;
+    seekBar.disabled = true;
     audio.pause();
     audio.removeAttribute('src');
     audio.load();
 
-    currentTrackUrl = trackUrl;
     statusEl.textContent = 'Загружаем трек...';
     trackInfoEl.textContent = 'Загрузка: ' + trackUrl;
 
     const directUrl = await ipcRenderer.invoke('get-audio-url', trackUrl);
-    console.log('Прямая ссылка получена');
-
     audio.src = directUrl;
 
     await new Promise((resolve, reject) => {
       const onReady = () => { cleanup(); resolve(); };
-      const onError = (e) => { cleanup(); reject(new Error('audio error')); };
+      const onError = () => { cleanup(); reject(new Error('audio error')); };
       const cleanup = () => {
         audio.removeEventListener('canplaythrough', onReady);
         audio.removeEventListener('error', onError);
@@ -150,9 +157,17 @@ async function loadTrack(trackUrl) {
 
     audioReady = true;
     const trackId = trackUrl.split('/').pop();
-    trackInfoEl.textContent = `Трек #${trackId} • ${audio.duration.toFixed(1)}с`;
+    trackInfoEl.textContent = `Трек #${trackId} • ${formatTime(audio.duration)}`;
+
+    // Настраиваем прогресс-бар
+    seekBar.max = audio.duration;
+    seekBar.value = 0;
+    seekBar.disabled = false;
+    timeCurrentEl.textContent = '0:00';
+    timeTotalEl.textContent = formatTime(audio.duration);
+    seekRow.classList.add('visible');
+
     statusEl.textContent = 'Трек готов. Хост может нажать Play.';
-    console.log('Трек готов, duration:', audio.duration);
   } catch (err) {
     console.error('Ошибка загрузки:', err);
     statusEl.textContent = 'Ошибка загрузки: ' + err.message;
@@ -160,7 +175,7 @@ async function loadTrack(trackUrl) {
   }
 }
 
-// --- Сообщения по data-каналу ---
+// --- Сообщения ---
 function handleMessage(msg) {
   if (msg.type === 'ping') {
     const t1 = Date.now();
@@ -173,12 +188,8 @@ function handleMessage(msg) {
     const rtt = t3 - msg.t0;
     const offset = ((msg.t1 - msg.t0) + (msg.t2 - t3)) / 2;
     pingSamples.push({ rtt, offset });
-
-    if (pingSamples.length >= PING_SAMPLE_COUNT) {
-      finishClockSync();
-    } else {
-      setTimeout(sendPing, 200);
-    }
+    if (pingSamples.length >= PING_SAMPLE_COUNT) finishClockSync();
+    else setTimeout(sendPing, 200);
     return;
   }
 
@@ -212,28 +223,25 @@ function finishClockSync() {
   statusEl.textContent = `Синхронизация: RTT ${avgRtt.toFixed(0)}мс`;
 }
 
-// --- Play/Pause ---
-function sendCommand(action) {
+// --- Команды ---
+function sendCommand(action, extraPosition) {
   if (!audioReady) {
     statusEl.textContent = 'Сначала загрузи трек';
     return;
   }
+  const position = extraPosition !== undefined ? extraPosition : audio.currentTime;
   const scheduledAt = Date.now() + LEAD_TIME_MS;
-  dataChannel.send(JSON.stringify({ type: 'command', action, position: virtualPosition, scheduledAt }));
-  scheduleCommand(action, virtualPosition, scheduledAt, true);
+  dataChannel.send(JSON.stringify({ type: 'command', action, position, scheduledAt }));
+  scheduleCommand(action, position, scheduledAt, true);
 }
 
 function scheduleCommand(action, position, hostScheduledAt, isLocalHost = false) {
   const localTargetTime = isLocalHost ? hostScheduledAt : hostScheduledAt + clockOffset;
   const delay = localTargetTime - Date.now();
-
   console.log(`Команда "${action}" → через ${delay.toFixed(0)}мс, позиция ${position.toFixed(2)}с`);
 
   setTimeout(async () => {
-    if (!audioReady) {
-      console.warn('Аудио не готово, команда пропущена');
-      return;
-    }
+    if (!audioReady) return;
 
     if (action === 'play') {
       audio.currentTime = position;
@@ -248,6 +256,10 @@ function scheduleCommand(action, position, hostScheduledAt, isLocalHost = false)
       audio.pause();
       isPlaying = false;
       stopPositionTimer();
+    } else if (action === 'seek') {
+      audio.currentTime = position;
+      // если играло — играет с новой точки; если пауза — остаётся на паузе
+      if (!audio.paused) startPositionTimer();
     }
   }, Math.max(0, delay));
 }
@@ -256,16 +268,35 @@ function startPositionTimer() {
   stopPositionTimer();
   positionTimer = setInterval(() => {
     virtualPosition = audio.currentTime;
-    positionEl.textContent = `Позиция: ${virtualPosition.toFixed(2)}с`;
+
+    // Обновляем ползунок, только если пользователь его не тащит
+    if (!isSeeking) {
+      seekBar.value = audio.currentTime;
+      timeCurrentEl.textContent = formatTime(audio.currentTime);
+    }
   }, 100);
 }
 
 function stopPositionTimer() {
   if (positionTimer) clearInterval(positionTimer);
-  positionEl.textContent = `Позиция: ${virtualPosition.toFixed(2)}с (пауза)`;
+  timeCurrentEl.textContent = formatTime(audio.currentTime);
 }
 
-// --- Обработчики кнопок ---
+// --- Прогресс-бар / seek ---
+// Пока тащим — показываем время под курсором, но НЕ отправляем команду
+seekBar.addEventListener('input', () => {
+  isSeeking = true;
+  timeCurrentEl.textContent = formatTime(parseFloat(seekBar.value));
+});
+
+// Отпустили ползунок — отправляем seek и возвращаем управление
+seekBar.addEventListener('change', () => {
+  const newPos = parseFloat(seekBar.value);
+  isSeeking = false;
+  sendCommand('seek', newPos);
+});
+
+// --- Кнопки ---
 loadBtn.addEventListener('click', () => {
   const url = trackUrlInput.value.trim();
   if (!url) return;
@@ -278,7 +309,7 @@ loadBtn.addEventListener('click', () => {
 playBtn.addEventListener('click', () => sendCommand('play'));
 pauseBtn.addEventListener('click', () => sendCommand('pause'));
 
-// Пробел — локальный play/pause для проверки звука
+// Пробел — локальный play/pause
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space' && audioReady) {
     e.preventDefault();
