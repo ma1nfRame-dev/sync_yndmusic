@@ -812,6 +812,40 @@ settingsBtn.addEventListener('click', async () => {
   settingsModal.classList.add('visible');
 });
 
+const oauthLoginBtn = document.getElementById('oauthLoginBtn');
+
+oauthLoginBtn.addEventListener('click', async () => {
+  try {
+    logEvent('ui:oauth-login:start');
+    statusEl.textContent = 'Открываем окно авторизации Яндекса...';
+
+    const result = await ipcRenderer.invoke('oauth-login');
+
+    if (result.success) {
+      logEvent('ui:oauth-login:success', { hasToken: true, expiresIn: result.expiresIn });
+      ymTokenInput.value = result.accessToken;
+      statusEl.textContent = 'Авторизация успешна! Токен сохранён.';
+      // Автоматически сохраняем настройки, чтобы токен записался в файл
+      await ipcRenderer.invoke('settings-save', {
+        ymToken: ymTokenInput.value,
+        ymUid: ymUidInput.value,
+        signalingUrl: signalingUrlInput.value,
+        roomName: roomNameInput.value
+      });
+      // Можно сразу закрыть модалку и перезагрузить, чтобы применить токен
+      settingsModal.classList.remove('visible');
+      window.location.reload();
+    } else {
+      logEvent('ui:oauth-login:failed', { error: result.error });
+      statusEl.textContent = 'Ошибка авторизации: ' + result.error;
+      alert('Не удалось войти через Яндекс: ' + result.error);
+    }
+  } catch (err) {
+    logEvent('ui:oauth-login:error', { error: err.message });
+    alert('Ошибка: ' + err.message);
+  }
+});
+
 settingsCancelBtn.addEventListener('click', () => {
   settingsModal.classList.remove('visible');
 });
