@@ -26,6 +26,7 @@
     "eslint": "^10.11.0"
   },
   "dependencies": {
+    "@dvxch/yandex-music": "^0.3.0",
     "@trystero-p2p/torrent": "^0.25.4",
     "dotenv": "^18.0.1",
     "trystero": "^0.25.4",

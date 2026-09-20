@@ -39,6 +39,12 @@ const playBtn = document.getElementById('playBtn');
 const pauseBtn = document.getElementById('pauseBtn');
 const prevBtn = document.getElementById('prevBtn');
 const nextBtn = document.getElementById('nextBtn');
+const lyricsBtn = document.getElementById('lyricsBtn');
+const lyricsPanel = document.getElementById('lyricsPanel');
+const lyricsCloseBtn = document.getElementById('lyricsCloseBtn');
+const lyricsStateEl = document.getElementById('lyricsState');
+const lyricsContentEl = document.getElementById('lyricsContent');
+const lyricsTrackNameEl = document.getElementById('lyricsTrackName');
 const volumeRow = document.getElementById('volumeRow');
 const volumeBar = document.getElementById('volumeBar');
 const volumeLabel = document.getElementById('volumeLabel');
@@ -102,6 +108,8 @@ let waveSessionId = null;
 let isLoadingNext = false;
 let isAdvancing = false;
 let isPlayCurrentBusy = false;
+let currentTrackForLyrics = null;
+let lyricsRequestId = 0;
 
 const rtcConfig = {
     iceServers: [
@@ -162,9 +170,27 @@ function updateSearchModeUI() {
 
 function setMaximizeButtonState(isMaximized) {
     if (!windowMaximizeBtn) return;
-    windowMaximizeBtn.textContent = isMaximized ? '❐' : '□';
+
+    windowMaximizeBtn.classList.toggle('is-maximized', Boolean(isMaximized));
+    windowMaximizeBtn.textContent = '';
     windowMaximizeBtn.title = isMaximized ? 'Восстановить' : 'Развернуть';
-    windowMaximizeBtn.setAttribute('aria-label', isMaximized ? 'Восстановить размер' : 'Развернуть окно');
+    windowMaximizeBtn.setAttribute(
+        'aria-label',
+        isMaximized ? 'Восстановить размер' : 'Развернуть окно'
+    );
+}
+
+ipcRenderer.on('window-maximized-changed', (_event, isMaximized) => {
+    setMaximizeButtonState(Boolean(isMaximized));
+});
+
+async function syncMaximizeButtonState() {
+    try {
+        const isMaximized = await ipcRenderer.invoke('window-is-maximized');
+        setMaximizeButtonState(Boolean(isMaximized));
+    } catch (err) {
+        logEvent('window:maximize-state:error', { error: err.message });
+    }
 }
 
 async function toggleMaximizeWindow() {
@@ -199,6 +225,8 @@ if (titlebarDragArea) {
     });
 }
 
+
+syncMaximizeButtonState();
 
 function updatePlaybackUI(playing) {
     const isActuallyPlaying = Boolean(playing) && audioReady && !audio.paused;
@@ -616,6 +644,299 @@ async function prevTrack(caller = 'unknown') {
     await playCurrent('prev:' + caller);
 }
 
+function setLyricsButtonVisible(visible) {
+    if (!lyricsBtn) return;
+    lyricsBtn.hidden = !visible;
+    if (!visible) lyricsBtn.classList.remove('active');
+}
+
+function closeLyricsPanel() {
+    if (!lyricsPanel) return;
+    lyricsPanel.hidden = true;
+    lyricsBtn?.classList.remove('active');
+}
+
+function setLyricsState(text, type = '') {
+    if (!lyricsStateEl) return;
+    lyricsStateEl.textContent = text;
+    lyricsStateEl.className = 'lyricsState' + (type ? ` ${type}` : '');
+}
+
+let karaokeLines = [];
+let karaokeActiveIndex = -1;
+let karaokeSynced = false;
+let karaokeReady = false;
+
+function resetKaraoke() {
+    karaokeLines = [];
+    karaokeActiveIndex = -1;
+    karaokeSynced = false;
+    karaokeReady = false;
+    if (lyricsContentEl) lyricsContentEl.innerHTML = '';
+}
+
+function parseTimeTag(mm, ss) {
+    const minutes = Number(mm);
+    const seconds = Number(ss);
+    if (!Number.isFinite(minutes) || !Number.isFinite(seconds)) return null;
+    return minutes * 60 + seconds;
+}
+
+function parseLrc(lrcText) {
+    const lines = [];
+    const input = String(lrcText || '').replace(/\r/g, '').split('\n');
+
+    for (const rawLine of input) {
+        if (!rawLine.trim()) continue;
+
+        const tags = [...rawLine.matchAll(/\[(\d{1,3}):(\d{2}(?:\.\d+)?)\]/g)];
+        if (!tags.length) continue;
+
+        const firstTagEnd = tags.at(-1).index + tags.at(-1)[0].length;
+        let lineText = rawLine.slice(firstTagEnd).trim();
+
+        // Поддерживаем Enhanced LRC: [mm:ss.xx] <mm:ss.xx>слово...
+        const wordRegex = /<(\d{1,3}):(\d{2}(?:\.\d+)?)>/g;
+        const wordTags = [...lineText.matchAll(wordRegex)];
+        let words = [];
+
+        if (wordTags.length) {
+            words = wordTags.map((tag, i) => {
+                const start = parseTimeTag(tag[1], tag[2]);
+                const from = tag.index + tag[0].length;
+                const to = i + 1 < wordTags.length ? wordTags[i + 1].index : lineText.length;
+                return {
+                    start,
+                    text: lineText.slice(from, to).trim()
+                };
+            }).filter(word => Number.isFinite(word.start) && word.text);
+
+            lineText = words.map(word => word.text).join(' ');
+        }
+
+        for (const tag of tags) {
+            const start = parseTimeTag(tag[1], tag[2]);
+            if (!Number.isFinite(start)) continue;
+
+            lines.push({
+                start,
+                text: lineText || '♪',
+                words: words.map(word => ({ ...word }))
+            });
+        }
+    }
+
+    lines.sort((a, b) => a.start - b.start);
+    return lines;
+}
+
+function renderPlainLyrics(text) {
+    resetKaraoke();
+
+    const lines = String(text || '').split(/\n+/).map(line => line.trim()).filter(Boolean);
+    karaokeLines = lines.map((text, index) => ({
+        start: index,
+        text,
+        words: []
+    }));
+
+    karaokeSynced = false;
+    karaokeReady = lines.length > 0;
+
+    if (!lyricsContentEl) return;
+
+    const fragment = document.createDocumentFragment();
+    karaokeLines.forEach((line, index) => {
+        const el = document.createElement('div');
+        el.className = 'karaokeLine plainLine';
+        el.dataset.index = String(index);
+        el.textContent = line.text;
+        fragment.appendChild(el);
+    });
+
+    lyricsContentEl.appendChild(fragment);
+}
+
+function renderKaraokeLyrics(lrcText) {
+    resetKaraoke();
+
+    karaokeLines = parseLrc(lrcText);
+    karaokeSynced = karaokeLines.length > 0;
+    karaokeReady = karaokeLines.length > 0;
+
+    if (!lyricsContentEl) return;
+
+    const fragment = document.createDocumentFragment();
+
+    karaokeLines.forEach((line, index) => {
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'karaokeLine';
+        el.dataset.index = String(index);
+        el.dataset.start = String(line.start);
+        el.setAttribute('role', 'option');
+        el.setAttribute('aria-label', line.text);
+
+        if (line.words?.length) {
+            line.words.forEach((word, wordIndex) => {
+                const span = document.createElement('span');
+                span.className = 'karaokeWord';
+                span.dataset.wordIndex = String(wordIndex);
+                span.dataset.start = String(word.start);
+                span.textContent = word.text + (wordIndex < line.words.length - 1 ? ' ' : '');
+                el.appendChild(span);
+            });
+        } else {
+            el.textContent = line.text;
+        }
+
+        el.addEventListener('click', () => {
+            if (!isHost || !audioReady) return;
+            sendCommand('seek', line.start, 'lyrics-line');
+        });
+
+        fragment.appendChild(el);
+    });
+
+    lyricsContentEl.appendChild(fragment);
+}
+
+function updateKaraokeUI(currentTime = audio.currentTime) {
+    if (!karaokeReady || !lyricsContentEl) return;
+
+    if (!karaokeSynced) return;
+
+    let active = -1;
+    for (let i = 0; i < karaokeLines.length; i++) {
+        if (karaokeLines[i].start <= currentTime + 0.02) active = i;
+        else break;
+    }
+
+    if (active < 0) {
+        if (karaokeActiveIndex !== -1) karaokeActiveIndex = -1;
+        return;
+    }
+
+    if (active !== karaokeActiveIndex) {
+        const previous = karaokeActiveIndex;
+        karaokeActiveIndex = active;
+
+        if (previous >= 0) {
+            const prevEl = lyricsContentEl.querySelector(`.karaokeLine[data-index="${previous}"]`);
+            prevEl?.classList.remove('active');
+        }
+
+        const activeEl = lyricsContentEl.querySelector(`.karaokeLine[data-index="${active}"]`);
+        activeEl?.classList.add('active');
+
+        const previousEl = active > 0
+            ? lyricsContentEl.querySelector(`.karaokeLine[data-index="${active - 1}"]`)
+            : null;
+        previousEl?.classList.add('past');
+
+        if (active > 1) {
+            const oldEl = lyricsContentEl.querySelector(`.karaokeLine[data-index="${active - 2}"]`);
+            oldEl?.classList.remove('past');
+            oldEl?.classList.add('faded');
+        }
+
+        if (activeEl) {
+            activeEl.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center'
+            });
+        }
+    }
+
+    const line = karaokeLines[active];
+    const lineEl = lyricsContentEl.querySelector(`.karaokeLine[data-index="${active}"]`);
+    if (!lineEl || !line.words?.length) return;
+
+    const words = [...lineEl.querySelectorAll('.karaokeWord')];
+    words.forEach((wordEl, index) => {
+        const start = line.words[index]?.start ?? line.start;
+        const nextStart = line.words[index + 1]?.start ?? Infinity;
+        wordEl.classList.toggle('sung', currentTime >= start);
+        wordEl.classList.toggle('singing', currentTime >= start && currentTime < nextStart);
+    });
+}
+
+function resetLyricsForTrack(track) {
+    currentTrackForLyrics = track || null;
+    lyricsRequestId++;
+    resetKaraoke();
+
+    if (lyricsTrackNameEl) {
+        lyricsTrackNameEl.textContent = track
+            ? `${track.artists || ''} — ${track.title || ''}`.replace(/^\s*—\s*|\s*—\s*$/g, '')
+            : '—';
+    }
+
+    closeLyricsPanel();
+    setLyricsState('Нажми «Текст», чтобы открыть караоке.', '');
+
+    // Не доверяем заранее переданному lyricsAvailable: у разных ответов
+    // Яндекс Музыки это поле может отсутствовать или быть устаревшим.
+    // Кнопка показывается для загруженного трека, а реальная проверка
+    // наличия текста выполняется через get-track-lyrics по нажатию.
+    setLyricsButtonVisible(Boolean(track));
+}
+
+async function openLyricsForCurrentTrack() {
+    const track = currentTrackForLyrics;
+    if (!track?.id || !lyricsBtn || !lyricsPanel) return;
+
+    const requestId = ++lyricsRequestId;
+    lyricsBtn.classList.add('active');
+    lyricsPanel.hidden = false;
+
+    if (lyricsTrackNameEl) {
+        lyricsTrackNameEl.textContent = `${track.artists || ''} — ${track.title || ''}`.replace(/^\s*—\s*|\s*—\s*$/g, '');
+    }
+
+    setLyricsState('Загружаем караоке…');
+    if (lyricsContentEl) lyricsContentEl.innerHTML = '';
+
+    try {
+        const result = await ipcRenderer.invoke('get-track-lyrics', track.id);
+
+        if (requestId !== lyricsRequestId || currentTrackForLyrics?.id !== track.id) return;
+
+        if (!result?.available || !result.text?.trim()) {
+            setLyricsState('У этого трека нет доступного текста в Яндекс Музыке.', 'error');
+            lyricsBtn.classList.remove('active');
+            return;
+        }
+
+        if (result.synced || result.format === 'lrc') {
+            renderKaraokeLyrics(result.text);
+
+            if (karaokeReady) {
+                setLyricsState('Караоке', 'success');
+                updateKaraokeUI(audio.currentTime);
+            } else {
+                renderPlainLyrics(result.text);
+                setLyricsState('Синхронизированный текст недоступен, показан обычный текст.', '');
+            }
+        } else {
+            renderPlainLyrics(result.text);
+            setLyricsState('Синхронизация текста недоступна — показан обычный текст.', '');
+        }
+    } catch (err) {
+        logEvent('lyrics:load:error', { trackId: track.id, error: err.message });
+        if (requestId !== lyricsRequestId || currentTrackForLyrics?.id !== track.id) return;
+        setLyricsState('Не удалось получить текст: ' + err.message, 'error');
+    }
+}
+
+if (lyricsBtn) {
+    lyricsBtn.addEventListener('click', openLyricsForCurrentTrack);
+}
+
+if (lyricsCloseBtn) {
+    lyricsCloseBtn.addEventListener('click', closeLyricsPanel);
+}
+
 async function loadTrack(track, caller = 'unknown') {
     isReloading = true;
     logEvent('loadTrack:start', { caller, track: { id: track.id, title: track.title, artists: track.artists } });
@@ -625,6 +946,7 @@ async function loadTrack(track, caller = 'unknown') {
         audio.pause();
         updatePlaybackUI(false);
         updateCurrentTrackArtwork(track);
+        resetLyricsForTrack(track);
 
         statusEl.textContent = 'Загружаем трек...';
         trackTitleEl.textContent = `Загрузка: ${track.artists} — ${track.title}`;
@@ -664,6 +986,8 @@ async function loadTrack(track, caller = 'unknown') {
         logEvent('loadTrack:error', { error: err.message });
         statusEl.textContent = 'Ошибка загрузки: ' + err.message;
         trackTitleEl.textContent = 'Не удалось загрузить';
+        setLyricsButtonVisible(false);
+        closeLyricsPanel();
     } finally {
         setTimeout(() => {
             isReloading = false;
@@ -813,6 +1137,7 @@ function startPositionTimer() {
             seekBar.value = audio.currentTime;
             timeCurrentEl.textContent = formatTime(audio.currentTime);
         }
+        updateKaraokeUI(audio.currentTime);
     }, 100);
 }
 
@@ -826,6 +1151,9 @@ audio.addEventListener('play', () => {
     updatePlaybackUI(true);
     startPositionTimer();
     logEvent('audio:play', { currentTime: audio.currentTime, state: snapshotState() });
+});
+audio.addEventListener('timeupdate', () => {
+    updateKaraokeUI(audio.currentTime);
 });
 audio.addEventListener('pause', () => {
     updatePlaybackUI(false);

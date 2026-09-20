@@ -90,6 +90,244 @@ function getApi() {
     return apiPromise;
 }
 
+// --- Текст трека ---
+//
+// Важно: текущий backend Yandex Music требует для /tracks/{id}/lyrics
+// дополнительные параметры timeStamp + sign (+ durationMs). Старый
+// yamd2 вызывает этот endpoint только с format, поэтому API отвечает:
+// "timeStamp: Parameter value is not set, sign: Parameter value is not set".
+//
+// Для lyrics используем отдельный актуальный клиент @dvxch/yandex-music,
+// который формирует корректный запрос. Основной yamd2 при этом остаётся
+// для поиска, радио и получения аудио.
+
+let lyricsClientPromise = null;
+
+function getYandexToken() {
+    const s = loadSettings();
+    return String(s.ymToken || process.env.YM_TOKEN || '').trim();
+}
+
+async function getLyricsClient() {
+    if (!lyricsClientPromise) {
+        lyricsClientPromise = (async () => {
+            const token = getYandexToken();
+            if (!token) {
+                throw new Error('Токен Яндекс.Музыки не настроен');
+            }
+
+            // @dvxch/yandex-music — ESM-only пакет, поэтому в CommonJS
+            // используем динамический import().
+            const { Client } = await import('@dvxch/yandex-music');
+
+            console.log('🎤 Инициализация отдельного клиента lyrics API');
+            return new Client({
+                token,
+                language: 'ru',
+                retries: 1
+            });
+        })();
+    }
+
+    return lyricsClientPromise;
+}
+
+const https = require('https');
+const http = require('http');
+const zlib = require('zlib');
+
+function fetchTextUrl(url, redirects = 0) {
+    return new Promise((resolve, reject) => {
+        if (!url) return reject(new Error('Пустая ссылка на текст'));
+        if (redirects > 5) return reject(new Error('Слишком много перенаправлений'));
+
+        let parsed;
+        try {
+            parsed = new URL(url);
+        } catch (e) {
+            reject(new Error('Некорректная ссылка на текст'));
+            return;
+        }
+
+        const client = parsed.protocol === 'http:' ? http : https;
+        const req = client.get(parsed, {
+            headers: {
+                'User-Agent': 'SyncPlayer/1.0',
+                'Accept': 'text/plain, text/*, */*'
+            },
+            timeout: 15000
+        }, (res) => {
+            const status = Number(res.statusCode || 0);
+
+            if ([301, 302, 303, 307, 308].includes(status) && res.headers.location) {
+                const nextUrl = new URL(res.headers.location, parsed).toString();
+                res.resume();
+                fetchTextUrl(nextUrl, redirects + 1).then(resolve).catch(reject);
+                return;
+            }
+
+            if (status < 200 || status >= 300) {
+                res.resume();
+                reject(new Error(`Сервер текста вернул HTTP ${status}`));
+                return;
+            }
+
+            let stream = res;
+            const encoding = String(res.headers['content-encoding'] || '').toLowerCase();
+
+            if (encoding.includes('gzip')) {
+                stream = res.pipe(zlib.createGunzip());
+            } else if (encoding.includes('deflate')) {
+                stream = res.pipe(zlib.createInflate());
+            } else if (encoding.includes('br') && zlib.createBrotliDecompress) {
+                stream = res.pipe(zlib.createBrotliDecompress());
+            }
+
+            const chunks = [];
+            stream.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+            stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+            stream.on('error', reject);
+        });
+
+        req.on('timeout', () => req.destroy(new Error('Таймаут загрузки текста')));
+        req.on('error', reject);
+    });
+}
+
+function pickLyricsText(value, depth = 0) {
+    if (!value || depth > 6) return null;
+
+    if (typeof value === 'string') {
+        return value.trim() ? value.trim() : null;
+    }
+
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const found = pickLyricsText(item, depth + 1);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    if (typeof value !== 'object') return null;
+
+    // В supplement Yandex могут встречаться разные формы lyrics.
+    for (const key of [
+        'fullLyrics',
+        'lyrics',
+        'text',
+        'content',
+        'fullText',
+        'plainText'
+    ]) {
+        if (key in value) {
+            const found = pickLyricsText(value[key], depth + 1);
+            if (found) return found;
+        }
+    }
+
+    return null;
+}
+
+function extractLyricsFromSupplement(supplement) {
+    const roots = [
+        supplement?.result?.lyrics,
+        supplement?.lyrics,
+        supplement?.result?.supplement?.lyrics,
+        supplement?.supplement?.lyrics,
+        supplement?.result?.track?.lyrics,
+        supplement?.track?.lyrics
+    ];
+
+    for (const root of roots) {
+        const text = pickLyricsText(root);
+        if (text) return text;
+    }
+
+    return null;
+}
+
+async function fetchLyricsViaModernClient(id, format) {
+    const client = await getLyricsClient();
+
+    const lyrics = await client.tracksLyrics(id, format);
+    if (!lyrics) return null;
+
+    const text = await lyrics.fetchLyrics();
+    if (!text || !String(text).trim()) return null;
+
+    return {
+        text: String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n'),
+        writers: Array.isArray(lyrics.writers) ? lyrics.writers : []
+    };
+}
+
+ipcMain.handle('get-track-lyrics', async (_event, trackId) => {
+    const id = String(trackId || '').trim();
+    if (!id) return { available: false, synced: false };
+
+    // 1) LRC — основной путь для караоке.
+    try {
+        const result = await fetchLyricsViaModernClient(id, 'LRC');
+
+        if (result?.text) {
+            console.log('🎤 LRC получен для трека', id);
+            return {
+                available: true,
+                synced: true,
+                format: 'lrc',
+                text: result.text,
+                writers: result.writers
+            };
+        }
+
+        console.log(`  ℹ️ Для ${id} LRC не найден`);
+    } catch (e) {
+        console.log(`  ⚠️ LRC через современный клиент не сработал для ${id}: ${e.message}`);
+    }
+
+    // 2) TEXT — обычный текст как fallback.
+    try {
+        const result = await fetchLyricsViaModernClient(id, 'TEXT');
+
+        if (result?.text) {
+            console.log('🎤 TEXT получен для трека', id);
+            return {
+                available: true,
+                synced: false,
+                format: 'text',
+                text: result.text,
+                writers: result.writers
+            };
+        }
+
+        console.log(`  ℹ️ Для ${id} TEXT не найден`);
+    } catch (e) {
+        console.log(`  ⚠️ TEXT через современный клиент не сработал для ${id}: ${e.message}`);
+    }
+
+    // 3) Последний fallback — supplement старого клиента.
+    try {
+        const { api } = await getApi();
+        const supplement = await api.tracks.getTrackSupplement(id);
+        const text = extractLyricsFromSupplement(supplement);
+
+        if (text) {
+            console.log('🎤 Текст получен из supplement для трека', id);
+            return {
+                available: true,
+                synced: false,
+                format: 'text',
+                text
+            };
+        }
+    } catch (e) {
+        console.log(`  ⚠️ Supplement текста не сработал для ${id}: ${e.message}`);
+    }
+
+    return { available: false, synced: false };
+});
+
 // --- Нормализация трека ---
 function normalizeTrack(t) {
     return {
@@ -101,6 +339,14 @@ function normalizeTrack(t) {
         durationMs: t.durationMs || 0,
         cover: t.coverUri
             ? 'https://' + t.coverUri.replace('%%', '200x200')
+            : null,
+        lyricsAvailable: typeof t.lyricsAvailable === 'boolean'
+            ? t.lyricsAvailable
+            : (typeof t.lyricsInfo?.hasAvailableTextLyrics === 'boolean' || typeof t.lyricsInfo?.hasAvailableSyncLyrics === 'boolean')
+                ? Boolean(t.lyricsInfo?.hasAvailableTextLyrics || t.lyricsInfo?.hasAvailableSyncLyrics)
+                : null,
+        textLyricsAvailable: typeof t.lyricsInfo?.hasAvailableTextLyrics === 'boolean'
+            ? t.lyricsInfo.hasAvailableTextLyrics
             : null
     };
 }

@@ -76,10 +76,14 @@
             <div id="searchResults"></div>
 
             <div class="controls" id="playRow">
-                <button id="prevBtn" title="Предыдущий (←)">⏮</button>
-                <button id="playBtn" aria-pressed="false">▶</button>
-                <button id="pauseBtn" aria-pressed="false">⏸</button>
-                <button id="nextBtn" title="Следующий (→)">⏭</button>
+                <button id="prevBtn" title="Предыдущий (←)" aria-label="Предыдущий">⏮</button>
+                <button id="playBtn" aria-pressed="false" title="Воспроизвести" aria-label="Воспроизвести">▶</button>
+                <button id="pauseBtn" aria-pressed="false" title="Пауза" aria-label="Пауза">⏸</button>
+                <button id="nextBtn" title="Следующий (→)" aria-label="Следующий">⏭</button>
+                <button id="lyricsBtn" class="lyricsAction" title="Открыть текст" aria-label="Открыть текст" hidden>
+                    <span class="lyricsActionIcon" aria-hidden="true">Aa</span>
+                    <span class="lyricsActionText">Текст</span>
+                </button>
             </div>
         </div>
 
@@ -88,6 +92,23 @@
             <div id="queueList"></div>
         </div>
     </div>
+
+    <!-- Текст текущего трека -->
+    <section id="lyricsPanel" hidden aria-live="polite">
+        <div id="lyricsHeader">
+            <div id="lyricsHeading">
+                <span id="lyricsEyebrow">ТЕКСТ ТРЕКА</span>
+                <span id="lyricsTrackName">—</span>
+            </div>
+            <button id="lyricsCloseBtn" type="button" title="Скрыть текст" aria-label="Скрыть текст">×</button>
+        </div>
+
+        <div id="lyricsState" class="lyricsState">
+            Нажми «Текст», чтобы загрузить текст песни.
+        </div>
+
+        <div id="lyricsContent" class="lyricsContent karaokeLyrics" role="listbox" aria-label="Текст песни"></div>
+    </section>
 
     <div id="settingsModal">
         <div class="modal">
