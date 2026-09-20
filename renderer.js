@@ -22,6 +22,10 @@ const statusEl = document.getElementById('status');
 const trackTitleEl = document.getElementById('trackTitle');
 const trackQueueEl = document.getElementById('trackQueue');
 const trackArtworkEl = document.getElementById('trackArtwork');
+const dynamicBackdropEl = document.getElementById('dynamicBackdrop');
+const backdropAEl = document.getElementById('backdropA');
+const backdropBEl = document.getElementById('backdropB');
+let activeBackdrop = 'A';
 const seekRow = document.getElementById('seekRow');
 const seekBar = document.getElementById('seekBar');
 const timeCurrentEl = document.getElementById('timeCurrent');
@@ -165,21 +169,55 @@ function updatePlaybackUI(playing) {
 }
 
 function updateCurrentTrackArtwork(track) {
-    if (!trackArtworkEl) return;
-
     const cover = track?.cover || '';
+
+    if (trackArtworkEl) {
+        if (!cover) {
+            trackArtworkEl.removeAttribute('src');
+            trackArtworkEl.classList.remove('has-cover');
+        } else {
+            trackArtworkEl.onload = () => trackArtworkEl.classList.add('has-cover');
+            trackArtworkEl.onerror = () => {
+                trackArtworkEl.classList.remove('has-cover');
+                trackArtworkEl.removeAttribute('src');
+            };
+            trackArtworkEl.src = cover;
+        }
+    }
+
+    updateDynamicBackdrop(cover);
+}
+
+function updateDynamicBackdrop(cover) {
+    if (!dynamicBackdropEl || !backdropAEl || !backdropBEl) return;
+
     if (!cover) {
-        trackArtworkEl.removeAttribute('src');
-        trackArtworkEl.classList.remove('has-cover');
+        backdropAEl.classList.remove('active');
+        backdropBEl.classList.remove('active');
+        backdropAEl.classList.add('fade');
+        backdropBEl.classList.add('fade');
+        dynamicBackdropEl.classList.remove('has-track');
         return;
     }
 
-    trackArtworkEl.onload = () => trackArtworkEl.classList.add('has-cover');
-    trackArtworkEl.onerror = () => {
-        trackArtworkEl.classList.remove('has-cover');
-        trackArtworkEl.removeAttribute('src');
+    const next = activeBackdrop === 'A' ? backdropBEl : backdropAEl;
+    const current = activeBackdrop === 'A' ? backdropAEl : backdropBEl;
+
+    next.onload = () => {
+        next.classList.remove('fade');
+        next.classList.add('active');
+        current.classList.remove('active');
+        current.classList.add('fade');
+        activeBackdrop = activeBackdrop === 'A' ? 'B' : 'A';
+        dynamicBackdropEl.classList.add('has-track');
     };
-    trackArtworkEl.src = cover;
+
+    next.onerror = () => {
+        next.classList.remove('active');
+        next.classList.add('fade');
+    };
+
+    next.src = cover;
 }
 
 // --- UI обновление по роли ---
