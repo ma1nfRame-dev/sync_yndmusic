@@ -1,8 +1,10 @@
 const { ipcRenderer } = require('electron');
 
-const ROOM = 'test-room-1';
-const SIGNALING_URL = 'ws://localhost:8080';
+// Значения по умолчанию, будут перезаписаны после загрузки настроек
+let ROOM = 'test-room-1';
+let SIGNALING_URL = 'ws://localhost:8080';
 
+// --- DOM ---
 const statusEl = document.getElementById('status');
 const trackTitleEl = document.getElementById('trackTitle');
 const trackQueueEl = document.getElementById('trackQueue');
@@ -27,11 +29,24 @@ const waveBtn = document.getElementById('waveBtn');
 const queuePanel = document.getElementById('queuePanel');
 const queueList = document.getElementById('queueList');
 
+// Настройки
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsModal = document.getElementById('settingsModal');
+const ymTokenInput = document.getElementById('ymTokenInput');
+const ymUidInput = document.getElementById('ymUidInput');
+const signalingUrlInput = document.getElementById('signalingUrlInput');
+const roomNameInput = document.getElementById('roomNameInput');
+const settingsSaveBtn = document.getElementById('settingsSaveBtn');
+const settingsCancelBtn = document.getElementById('settingsCancelBtn');
+
+// --- Аудио ---
 const audio = new Audio();
 audio.crossOrigin = 'anonymous';
 let audioReady = false;
 let isSeeking = false;
+let isReloading = false;  // защита от фантомного 'ended' при смене src
 
+// --- Состояние соединения ---
 let ws;
 let pc = null;
 let dataChannel = null;
@@ -48,11 +63,13 @@ let virtualPosition = 0;
 let isPlaying = false;
 let positionTimer = null;
 
+// --- Плейлист ---
 let playlist = [];
 let playlistIndex = -1;
 let playlistMode = null;
 let waveSessionId = null;
 let isLoadingNext = false;
+let isAdvancing = false;  // защита от двойного nextTrack
 
 const rtcConfig = {
   iceServers: [
@@ -65,8 +82,8 @@ const rtcConfig = {
     {
       urls: [
         'turn:turn.evan-brass.net',
-        'turn:turn.evan-brass.net?transport=tcp', // TCP — если UDP заблокирован
-        'turns:turn.evan-brass.net:443?transport=tcp' // TLS через 443 — работает почти везде
+        'turn:turn.evan-brass.net?transport=tcp',
+        'turns:turn.evan-brass.net:443?transport=tcp'
       ],
       username: 'user',
       credential: 'password'
@@ -74,6 +91,7 @@ const rtcConfig = {
   ]
 };
 
+// --- Утилиты ---
 function formatTime(sec) {
   if (!isFinite(sec) || sec < 0) sec = 0;
   const m = Math.floor(sec / 60);
@@ -154,55 +172,68 @@ async function jumpToTrack(index) {
   await playCurrent();
 }
 
-ws = new WebSocket(SIGNALING_URL);
+// --- WebSocket / Signaling ---
+function initWebSocket() {
+  console.log(`🔌 Подключаемся к ${SIGNALING_URL}, комната: ${ROOM}`);
+  ws = new WebSocket(SIGNALING_URL);
 
-ws.onopen = () => {
-  statusEl.textContent = 'Подключено к signaling, ждём партнёра...';
-  ws.send(JSON.stringify({ type: 'join', room: ROOM }));
-};
+  ws.onopen = () => {
+    statusEl.textContent = 'Подключено к signaling, ждём партнёра...';
+    ws.send(JSON.stringify({ type: 'join', room: ROOM }));
+  };
 
-ws.onmessage = async (event) => {
-  const msg = JSON.parse(event.data);
+  ws.onerror = (e) => {
+    console.error('WebSocket ошибка:', e);
+    statusEl.textContent = 'Ошибка подключения к signaling-серверу';
+  };
 
-  if (msg.type === 'role') {
-    role = msg.role;
-    isHost = role === 'offerer';
-    if (isHost) searchRow.classList.add('visible');
-    return;
-  }
+  ws.onclose = () => {
+    console.log('WebSocket закрыт');
+  };
 
-  if (msg.type === 'ready') {
-    statusEl.textContent = 'Партнёр найден, устанавливаем P2P...';
-    createPeerConnection();
+  ws.onmessage = async (event) => {
+    const msg = JSON.parse(event.data);
 
-    if (role === 'offerer') {
-      dataChannel = pc.createDataChannel('sync');
-      setupDataChannel();
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
+    if (msg.type === 'role') {
+      role = msg.role;
+      isHost = role === 'offerer';
+      if (isHost) searchRow.classList.add('visible');
+      return;
     }
-    return;
-  }
 
-  if (msg.type === 'offer') {
-    await pc.setRemoteDescription(msg.sdp);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
-    return;
-  }
+    if (msg.type === 'ready') {
+      statusEl.textContent = 'Партнёр найден, устанавливаем P2P...';
+      createPeerConnection();
 
-  if (msg.type === 'answer') {
-    await pc.setRemoteDescription(msg.sdp);
-    return;
-  }
+      if (role === 'offerer') {
+        dataChannel = pc.createDataChannel('sync');
+        setupDataChannel();
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
+      }
+      return;
+    }
 
-  if (msg.type === 'ice') {
-    if (msg.candidate) await pc.addIceCandidate(msg.candidate);
-    return;
-  }
-};
+    if (msg.type === 'offer') {
+      await pc.setRemoteDescription(msg.sdp);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
+      return;
+    }
+
+    if (msg.type === 'answer') {
+      await pc.setRemoteDescription(msg.sdp);
+      return;
+    }
+
+    if (msg.type === 'ice') {
+      if (msg.candidate) await pc.addIceCandidate(msg.candidate);
+      return;
+    }
+  };
+}
 
 function createPeerConnection() {
   pc = new RTCPeerConnection(rtcConfig);
@@ -232,6 +263,7 @@ function setupDataChannel() {
   };
 }
 
+// --- Поиск ---
 async function doSearch() {
   const query = searchInput.value.trim();
   if (!query) return;
@@ -296,6 +328,7 @@ async function pickTrackFromSearch(results, index) {
   await playCurrent();
 }
 
+// --- Яндекс Волна ---
 async function startWave() {
   try {
     statusEl.textContent = '📻 Запускаем Волну...';
@@ -345,6 +378,7 @@ async function fetchMoreWave() {
   }
 }
 
+// --- Управление воспроизведением ---
 async function playCurrent() {
   const track = playlist[playlistIndex];
   if (!track) return;
@@ -357,28 +391,36 @@ async function playCurrent() {
   updateQueueLabel();
 
   if (isHost && dataChannel && dataChannel.readyState === 'open') {
-    setTimeout(() => sendCommand('play', 0), 400);
+    setTimeout(() => sendCommand('play', 0), 1500);
   }
 }
 
 async function nextTrack() {
   if (!isHost) return;
   if (playlist.length === 0) return;
-
-  if (playlistIndex + 1 < playlist.length) {
-    playlistIndex++;
-    await playCurrent();
+  if (isAdvancing) {
+    console.log('⏭ nextTrack уже выполняется, пропуск');
     return;
   }
-
-  if (playlistMode === 'wave') {
-    const ok = await fetchMoreWave();
-    if (ok && playlistIndex + 1 < playlist.length) {
+  isAdvancing = true;
+  try {
+    if (playlistIndex + 1 < playlist.length) {
       playlistIndex++;
       await playCurrent();
+      return;
     }
-  } else {
-    statusEl.textContent = 'Это последний трек в плейлисте';
+
+    if (playlistMode === 'wave') {
+      const ok = await fetchMoreWave();
+      if (ok && playlistIndex + 1 < playlist.length) {
+        playlistIndex++;
+        await playCurrent();
+      }
+    } else {
+      statusEl.textContent = 'Это последний трек в плейлисте';
+    }
+  } finally {
+    setTimeout(() => { isAdvancing = false; }, 800);
   }
 }
 
@@ -394,12 +436,12 @@ async function prevTrack() {
 }
 
 async function loadTrack(track) {
+  isReloading = true;
+  console.log(`📥 Начинаем загрузку: ${track.artists} — ${track.title}`);
   try {
     audioReady = false;
     seekBar.disabled = true;
     audio.pause();
-    audio.removeAttribute('src');
-    audio.load();
 
     statusEl.textContent = 'Загружаем трек...';
     trackTitleEl.textContent = `Загрузка: ${track.artists} — ${track.title}`;
@@ -420,6 +462,8 @@ async function loadTrack(track) {
     });
 
     audioReady = true;
+    console.log(`✅ Трек готов: ${track.title}, duration=${audio.duration}`);
+
     trackTitleEl.textContent = `${track.artists} — ${track.title} • ${formatTime(audio.duration)}`;
 
     seekBar.max = audio.duration;
@@ -436,9 +480,13 @@ async function loadTrack(track) {
     console.error('Ошибка загрузки:', err);
     statusEl.textContent = 'Ошибка загрузки: ' + err.message;
     trackTitleEl.textContent = 'Не удалось загрузить';
+  } finally {
+    // Даём событиям устаканиться, чтобы фантомный 'ended' не сработал
+    setTimeout(() => { isReloading = false; }, 500);
   }
 }
 
+// --- Сетевые сообщения ---
 function handleMessage(msg) {
   if (msg.type === 'ping') {
     const t1 = Date.now();
@@ -486,6 +534,7 @@ function finishClockSync() {
   statusEl.textContent = `Синхронизация: RTT ${avgRtt.toFixed(0)}мс`;
 }
 
+// --- Команды ---
 function sendCommand(action, extraPosition) {
   if (!audioReady) {
     statusEl.textContent = 'Сначала выбери трек';
@@ -502,16 +551,21 @@ function scheduleCommand(action, position, hostScheduledAt, isLocalHost = false)
   const delay = localTargetTime - Date.now();
 
   setTimeout(async () => {
-    if (!audioReady) return;
+    console.log(`⏰ Команда ${action} сработала, audioReady=${audioReady}`);
+    if (!audioReady) {
+      console.warn(`⚠️ Команда ${action} пропущена: трек не готов`);
+      return;
+    }
 
     if (action === 'play') {
       audio.currentTime = position;
       try {
         await audio.play();
+        console.log(`▶️ Играем с ${position}с`);
         isPlaying = true;
         startPositionTimer();
       } catch (e) {
-        console.error('play() упал:', e);
+        console.error('❌ play() упал:', e);
       }
     } else if (action === 'pause') {
       audio.pause();
@@ -541,12 +595,17 @@ function stopPositionTimer() {
 }
 
 audio.addEventListener('ended', () => {
+  if (isReloading) {
+    console.log('⏭ ended проигнорирован (идёт загрузка)');
+    return;
+  }
   if (isHost) {
-    console.log('Трек закончился → следующий');
+    console.log('⏭ Трек закончился → следующий');
     nextTrack();
   }
 });
 
+// --- Громкость ---
 let lastVolume = 1;
 
 function updateVolumeUI() {
@@ -580,6 +639,7 @@ muteBtn.addEventListener('click', () => {
 
 updateVolumeUI();
 
+// --- UI события ---
 searchBtn.addEventListener('click', doSearch);
 searchInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') doSearch();
@@ -616,3 +676,58 @@ window.addEventListener('keydown', (e) => {
     prevTrack();
   }
 });
+
+// --- Настройки ---
+settingsBtn.addEventListener('click', async () => {
+  const config = await ipcRenderer.invoke('settings-load');
+  if (config) {
+    ymTokenInput.value = config.ymToken || '';
+    ymUidInput.value = config.ymUid || '';
+    signalingUrlInput.value = config.signalingUrl || 'ws://localhost:8080';
+    roomNameInput.value = config.roomName || 'test-room-1';
+  }
+  settingsModal.classList.add('visible');
+});
+
+settingsCancelBtn.addEventListener('click', () => {
+  settingsModal.classList.remove('visible');
+});
+
+settingsSaveBtn.addEventListener('click', async () => {
+  const config = {
+    ymToken: ymTokenInput.value.trim(),
+    ymUid: ymUidInput.value.trim(),
+    signalingUrl: signalingUrlInput.value.trim() || 'ws://localhost:8080',
+    roomName: roomNameInput.value.trim() || 'test-room-1'
+  };
+
+  const result = await ipcRenderer.invoke('settings-save', config);
+  if (result.success) {
+    console.log('Настройки сохранены, перезагружаем окно...');
+    settingsModal.classList.remove('visible');
+    window.location.reload();
+  } else {
+    alert('Ошибка сохранения: ' + result.error);
+  }
+});
+
+// Закрыть по клику на фон
+settingsModal.addEventListener('click', (e) => {
+  if (e.target === settingsModal) {
+    settingsModal.classList.remove('visible');
+  }
+});
+
+// --- Инициализация после загрузки настроек ---
+(async () => {
+  try {
+    const config = await ipcRenderer.invoke('settings-load');
+    if (config) {
+      if (config.signalingUrl) SIGNALING_URL = config.signalingUrl;
+      if (config.roomName) ROOM = config.roomName;
+    }
+  } catch (err) {
+    console.error('Не удалось загрузить настройки, использую значения по умолчанию:', err);
+  }
+  initWebSocket();
+})();
