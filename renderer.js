@@ -15,6 +15,7 @@ function logEvent(type, data = {}) {
 
 let ROOM = 'test-room-1';
 let SIGNALING_URL = 'ws://localhost:8080';
+let SEARCH_MODE = 'artist'; // 'artist' | 'tracks'
 
 // --- DOM ---
 const statusEl = document.getElementById('status');
@@ -43,6 +44,9 @@ const queueList = document.getElementById('queueList');
 
 const hostBadge = document.getElementById('hostBadge');
 const transferHostBtn = document.getElementById('transferHostBtn');
+
+const modeArtistBtn = document.getElementById('modeArtistBtn');
+const modeTracksBtn = document.getElementById('modeTracksBtn');
 
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsModal = document.getElementById('settingsModal');
@@ -130,8 +134,19 @@ function snapshotState() {
     isHost,
     dataChannelState: dataChannel ? dataChannel.readyState : 'none',
     wsState: ws ? ws.readyState : 'none',
-    clockOffset: Number(clockOffset.toFixed(2))
+    clockOffset: Number(clockOffset.toFixed(2)),
+    searchMode: SEARCH_MODE
   };
+}
+
+function updateSearchModeUI() {
+  if (SEARCH_MODE === 'artist') {
+    modeArtistBtn.classList.add('active');
+    modeTracksBtn.classList.remove('active');
+  } else {
+    modeTracksBtn.classList.add('active');
+    modeArtistBtn.classList.remove('active');
+  }
 }
 
 // --- UI обновление по роли ---
@@ -184,7 +199,6 @@ function initWebSocket() {
 
     if (msg.type === 'role') {
       role = msg.role;
-      // Изначально хост = offerer
       isHost = role === 'offerer';
       updateUIForRole();
       return;
@@ -285,7 +299,7 @@ function dcSend(msg) {
   return true;
 }
 
-// --- Синхронизация плейлиста с партнёром ---
+// --- Синхронизация плейлиста ---
 function broadcastPlaylist() {
   if (!isHost) return;
   dcSend({
@@ -302,12 +316,12 @@ async function doSearch() {
   const query = searchInput.value.trim();
   if (!query) return;
 
-  logEvent('ui:search', { query });
+  logEvent('ui:search', { query, mode: SEARCH_MODE });
   searchResultsEl.innerHTML = '<div class="searchHint">Поиск...</div>';
   searchResultsEl.classList.add('visible');
 
   try {
-    const tracks = await ipcRenderer.invoke('search-tracks', query);
+    const tracks = await ipcRenderer.invoke('search-tracks', query, SEARCH_MODE);
     renderResults(tracks);
   } catch (err) {
     logEvent('ui:search:error', { error: err.message });
@@ -430,9 +444,7 @@ async function playCurrent(caller = 'unknown') {
     logEvent('playCurrent', { caller, playlistIndex, track: track ? { id: track.id, title: track.title } : null, state: snapshotState() });
     if (!track) return;
 
-    // Синхронизируем плейлист с партнёром
     broadcastPlaylist();
-
     dcSend({ type: 'load', track });
     await loadTrack(track, caller);
     updateQueueLabel();
@@ -522,7 +534,7 @@ async function loadTrack(track, caller = 'unknown') {
 
     seekBar.max = audio.duration;
     seekBar.value = 0;
-    seekBar.disabled = !isHost; // не-хост не может тащить ползунок
+    seekBar.disabled = !isHost;
     timeCurrentEl.textContent = '0:00';
     timeTotalEl.textContent = formatTime(audio.duration);
     seekRow.classList.add('visible');
@@ -584,8 +596,7 @@ function handleMessage(msg) {
 
   if (msg.type === 'host-changed') {
     logEvent('handle:host-changed', { newHostRole: msg.newHostRole, myRole: role });
-    const iAmNewHost = (msg.newHostRole === role);
-    isHost = iAmNewHost;
+    isHost = (msg.newHostRole === role);
 
     if (msg.playlist) {
       playlist = msg.playlist;
@@ -850,7 +861,6 @@ function transferHost() {
     waveSessionId
   });
 
-  // Локально снимаем с себя права
   isHost = false;
   updateUIForRole();
   statusEl.textContent = '👑 Ты передал права хоста партнёру';
@@ -864,6 +874,29 @@ searchInput.addEventListener('keydown', (e) => {
 
 waveBtn.addEventListener('click', startWave);
 transferHostBtn.addEventListener('click', transferHost);
+
+modeArtistBtn.addEventListener('click', () => {
+  SEARCH_MODE = 'artist';
+  updateSearchModeUI();
+  logEvent('ui:searchMode-changed', { mode: SEARCH_MODE });
+  // Меняем настройку без перезагрузки (для сохранения при следующем Save)
+  ipcRenderer.invoke('settings-load').then(cfg => {
+    if (cfg) {
+      ipcRenderer.invoke('settings-save', { ...cfg, searchMode: SEARCH_MODE });
+    }
+  });
+});
+
+modeTracksBtn.addEventListener('click', () => {
+  SEARCH_MODE = 'tracks';
+  updateSearchModeUI();
+  logEvent('ui:searchMode-changed', { mode: SEARCH_MODE });
+  ipcRenderer.invoke('settings-load').then(cfg => {
+    if (cfg) {
+      ipcRenderer.invoke('settings-save', { ...cfg, searchMode: SEARCH_MODE });
+    }
+  });
+});
 
 seekBar.addEventListener('input', () => {
   if (!isHost) return;
@@ -923,10 +956,11 @@ settingsSaveBtn.addEventListener('click', async () => {
     ymToken: ymTokenInput.value.trim(),
     ymUid: ymUidInput.value.trim(),
     signalingUrl: signalingUrlInput.value.trim() || 'ws://localhost:8080',
-    roomName: roomNameInput.value.trim() || 'test-room-1'
+    roomName: roomNameInput.value.trim() || 'test-room-1',
+    searchMode: SEARCH_MODE
   };
 
-  logEvent('settings:save', { hasToken: !!config.ymToken, ymUid: config.ymUid, signalingUrl: config.signalingUrl, roomName: config.roomName });
+  logEvent('settings:save', { hasToken: !!config.ymToken, ymUid: config.ymUid, signalingUrl: config.signalingUrl, roomName: config.roomName, searchMode: config.searchMode });
 
   try {
     const result = await ipcRenderer.invoke('settings-save', config);
@@ -972,7 +1006,8 @@ if (oauthLoginBtn) {
           ymToken: ymTokenInput.value,
           ymUid: ymUidInput.value,
           signalingUrl: signalingUrlInput.value,
-          roomName: roomNameInput.value
+          roomName: roomNameInput.value,
+          searchMode: SEARCH_MODE
         });
         settingsModal.classList.remove('visible');
         window.location.reload();
@@ -995,11 +1030,13 @@ if (oauthLoginBtn) {
     if (config) {
       if (config.signalingUrl) SIGNALING_URL = config.signalingUrl;
       if (config.roomName) ROOM = config.roomName;
+      if (config.searchMode) SEARCH_MODE = config.searchMode;
     }
   } catch (err) {
     logEvent('init:settings-load-error', { error: err.message });
   }
-  logEvent('init:session-start', { room: ROOM, url: SIGNALING_URL });
+  logEvent('init:session-start', { room: ROOM, url: SIGNALING_URL, searchMode: SEARCH_MODE });
+  updateSearchModeUI();
   updateUIForRole();
   initWebSocket();
 })();

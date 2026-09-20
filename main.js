@@ -32,7 +32,7 @@ ipcMain.handle('log-open', () => {
 
 ipcMain.handle('log-path', () => LOG_FILE);
 
-// --- Настройки (простой JSON) ---
+// --- Настройки ---
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'sync-settings.json');
 }
@@ -90,7 +90,7 @@ function getApi() {
   return apiPromise;
 }
 
-// --- Нормализация ---
+// --- Нормализация трека ---
 function normalizeTrack(t) {
   return {
     id: t.id || t.realId,
@@ -113,16 +113,65 @@ function extractRotorTracks(batch) {
     .map(normalizeTrack);
 }
 
-// --- Поиск ---
-ipcMain.handle('search-tracks', async (_event, query) => {
+// --- Поиск (гибридный, с режимом) ---
+ipcMain.handle('search-tracks', async (_event, query, mode = 'tracks') => {
   const { api } = await getApi();
-  const result = await api.search.tracks(query);
-  const raw = result?.tracks?.results || [];
-  const tracks = raw
-    .filter(t => t.available !== false)
-    .slice(0, 15)
-    .map(normalizeTrack);
-  console.log(`🔍 "${query}" → найдено ${tracks.length} треков`);
+  const q = String(query || '').trim();
+  if (!q) return [];
+
+  console.log(`🔍 Поиск: "${q}" (режим: ${mode})`);
+
+  const result = await api.search.tracks(q);
+  const rawTracks = result?.tracks?.results || [];
+
+  // Режим "Треки" — просто отдаём как есть
+  if (mode !== 'artist') {
+    const tracks = rawTracks
+      .filter(t => t.available !== false)
+      .slice(0, 15)
+      .map(normalizeTrack);
+    console.log(`  → треков по названию: ${tracks.length}`);
+    return tracks;
+  }
+
+  // Режим "Исполнитель" — тянем треки найденного артиста первыми
+  console.log(`  → треков по названию: ${rawTracks.length}, ищем исполнителя...`);
+
+  let artistTracks = [];
+  let artistName = null;
+
+  try {
+    const artistResult = await api.search.artists(q);
+    const firstArtist = artistResult?.artists?.results?.[0] || null;
+    if (firstArtist && firstArtist.id) {
+      artistName = firstArtist.name;
+      const data = await api.artists.getArtistTracks(firstArtist.id, { page: 0, pageSize: 10 });
+      artistTracks = data?.tracks || data?.results || [];
+      console.log(`  → треков исполнителя "${artistName}": ${artistTracks.length}`);
+    } else {
+      console.log(`  → исполнитель не найден`);
+    }
+  } catch (e) {
+    console.log(`  ⚠️ Не смог получить треки исполнителя: ${e.message}`);
+  }
+
+  // Объединяем: артист первым, потом обычные треки, убираем дубли
+  const seen = new Set();
+  const merged = [];
+  const pushTrack = (t) => {
+    if (!t) return;
+    const id = String(t.id || t.realId || '');
+    if (!id || seen.has(id)) return;
+    if (t.available === false) return;
+    seen.add(id);
+    merged.push(t);
+  };
+
+  for (const t of artistTracks) pushTrack(t);
+  for (const t of rawTracks) pushTrack(t);
+
+  const tracks = merged.slice(0, 15).map(normalizeTrack);
+  console.log(`✅ Итог: ${tracks.length} треков (артист вперёд)`);
   return tracks;
 });
 
@@ -165,16 +214,20 @@ ipcMain.handle('settings-load', async () => {
     ymToken: s.ymToken || '',
     ymUid: s.ymUid || '',
     signalingUrl: s.signalingUrl || 'ws://localhost:8080',
-    roomName: s.roomName || 'test-room-1'
+    roomName: s.roomName || 'test-room-1',
+    searchMode: s.searchMode || 'artist' // 'artist' | 'tracks'
   };
 });
 
 ipcMain.handle('settings-save', async (_event, config) => {
+  const prev = loadSettings();
   const ok = saveSettings({
+    ...prev,
     ymToken: String(config.ymToken || ''),
     ymUid: String(config.ymUid || ''),
     signalingUrl: String(config.signalingUrl || 'ws://localhost:8080'),
-    roomName: String(config.roomName || 'test-room-1')
+    roomName: String(config.roomName || 'test-room-1'),
+    searchMode: String(config.searchMode || 'artist')
   });
   if (ok) {
     apiPromise = null;
@@ -184,12 +237,12 @@ ipcMain.handle('settings-save', async (_event, config) => {
   return { success: false, error: 'Не смог записать файл' };
 });
 
-// --- OAuth через Яндекс ---
-const YANDEX_CLIENT_ID = '23cabbbdc6cd418abb4b39c32c41195d'; // client_id от официального приложения Яндекс.Музыки для Windows
+// --- OAuth Яндекс ---
+const YANDEX_CLIENT_ID = '23cabbbdc6cd418abb4b39c32c41195d';
 const YANDEX_AUTH_URL = `https://oauth.yandex.ru/authorize?response_type=token&client_id=${YANDEX_CLIENT_ID}`;
 
 ipcMain.handle('oauth-login', async () => {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const authWindow = new BrowserWindow({
       width: 800,
       height: 700,
@@ -203,7 +256,6 @@ ipcMain.handle('oauth-login', async () => {
 
     function handleUrl(url) {
       if (resolved) return;
-      // Ищем токен в хэш-части URL (Implicit Flow)
       if (url.includes('#access_token=')) {
         resolved = true;
         const params = new URLSearchParams(url.split('#')[1]);
@@ -212,11 +264,10 @@ ipcMain.handle('oauth-login', async () => {
 
         if (accessToken) {
           console.log('✅ OAuth токен получен');
-          // Сохраняем токен в настройки
           const s = loadSettings();
           s.ymToken = accessToken;
           saveSettings(s);
-          apiPromise = null; // сбрасываем кеш API
+          apiPromise = null;
           resolve({ success: true, accessToken, expiresIn });
         } else {
           resolve({ success: false, error: 'Токен не найден в URL' });
@@ -225,18 +276,11 @@ ipcMain.handle('oauth-login', async () => {
       }
     }
 
-    // Слушаем все попытки навигации
-    authWindow.webContents.on('will-navigate', (event, url) => {
-      handleUrl(url);
-    });
-    authWindow.webContents.on('will-redirect', (event, url) => {
-      handleUrl(url);
-    });
+    authWindow.webContents.on('will-navigate', (_e, url) => handleUrl(url));
+    authWindow.webContents.on('will-redirect', (_e, url) => handleUrl(url));
 
     authWindow.on('closed', () => {
-      if (!resolved) {
-        resolve({ success: false, error: 'Окно авторизации закрыто пользователем' });
-      }
+      if (!resolved) resolve({ success: false, error: 'Окно авторизации закрыто' });
     });
 
     authWindow.loadURL(YANDEX_AUTH_URL);
