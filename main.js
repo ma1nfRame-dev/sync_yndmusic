@@ -17,7 +17,6 @@ const LOG_FILE = path.join(
 );
 console.log('📝 Лог пишется в:', LOG_FILE);
 
-// Запись лога из renderer (fire-and-forget)
 ipcMain.on('log-write', (_event, entry) => {
   try {
     fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n', 'utf-8');
@@ -26,7 +25,6 @@ ipcMain.on('log-write', (_event, entry) => {
   }
 });
 
-// Открыть папку с логами
 ipcMain.handle('log-open', () => {
   shell.showItemInFolder(LOG_FILE);
   return LOG_FILE;

@@ -9,13 +9,10 @@ function logEvent(type, data = {}) {
     type,
     ...data
   };
-  // В консоль — как было
   try { console.log(`[${type}]`, data); } catch (e) {}
-  // В файл
   try { ipcRenderer.send('log-write', entry); } catch (e) {}
 }
 
-// Значения по умолчанию, будут перезаписаны после загрузки настроек
 let ROOM = 'test-room-1';
 let SIGNALING_URL = 'ws://localhost:8080';
 
@@ -44,7 +41,6 @@ const waveBtn = document.getElementById('waveBtn');
 const queuePanel = document.getElementById('queuePanel');
 const queueList = document.getElementById('queueList');
 
-// Настройки
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsModal = document.getElementById('settingsModal');
 const ymTokenInput = document.getElementById('ymTokenInput');
@@ -53,8 +49,6 @@ const signalingUrlInput = document.getElementById('signalingUrlInput');
 const roomNameInput = document.getElementById('roomNameInput');
 const settingsSaveBtn = document.getElementById('settingsSaveBtn');
 const settingsCancelBtn = document.getElementById('settingsCancelBtn');
-
-// Кнопка логов (может отсутствовать в старом HTML — не падаем)
 const logBtn = document.getElementById('logBtn');
 
 // --- Аудио ---
@@ -64,7 +58,7 @@ let audioReady = false;
 let isSeeking = false;
 let isReloading = false;
 
-// --- Состояние соединения ---
+// --- Состояние ---
 let ws;
 let pc = null;
 let dataChannel = null;
@@ -88,6 +82,7 @@ let playlistMode = null;
 let waveSessionId = null;
 let isLoadingNext = false;
 let isAdvancing = false;
+let isPlayCurrentBusy = false;
 
 const rtcConfig = {
   iceServers: [
@@ -135,7 +130,7 @@ function snapshotState() {
   };
 }
 
-// --- WebSocket / Signaling ---
+// --- WebSocket ---
 function initWebSocket() {
   logEvent('ws:init', { url: SIGNALING_URL, room: ROOM });
   ws = new WebSocket(SIGNALING_URL);
@@ -177,8 +172,7 @@ function initWebSocket() {
         setupDataChannel();
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        const outMsg = { type: 'offer', sdp: offer };
-        ws.send(JSON.stringify(outMsg));
+        ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
         logEvent('ws:send', { msg: { type: 'offer' } });
       }
       return;
@@ -188,8 +182,7 @@ function initWebSocket() {
       await pc.setRemoteDescription(msg.sdp);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      const outMsg = { type: 'answer', sdp: answer };
-      ws.send(JSON.stringify(outMsg));
+      ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
       logEvent('ws:send', { msg: { type: 'answer' } });
       return;
     }
@@ -211,25 +204,16 @@ function createPeerConnection() {
 
   pc.onicecandidate = (event) => {
     if (event.candidate) {
-      const outMsg = { type: 'ice', candidate: event.candidate };
-      ws.send(JSON.stringify(outMsg));
+      ws.send(JSON.stringify({ type: 'ice', candidate: event.candidate }));
       logEvent('ws:send', { msg: { type: 'ice', candidateType: event.candidate.type } });
     } else {
       logEvent('ice:end-of-candidates');
     }
   };
 
-  pc.oniceconnectionstatechange = () => {
-    logEvent('pc:iceConnectionState', { state: pc.iceConnectionState });
-  };
-
-  pc.onconnectionstatechange = () => {
-    logEvent('pc:connectionState', { state: pc.connectionState });
-  };
-
-  pc.onsignalingstatechange = () => {
-    logEvent('pc:signalingState', { state: pc.signalingState });
-  };
+  pc.oniceconnectionstatechange = () => logEvent('pc:iceConnectionState', { state: pc.iceConnectionState });
+  pc.onconnectionstatechange = () => logEvent('pc:connectionState', { state: pc.connectionState });
+  pc.onsignalingstatechange = () => logEvent('pc:signalingState', { state: pc.signalingState });
 
   pc.ondatachannel = (event) => {
     dataChannel = event.channel;
@@ -243,28 +227,19 @@ function setupDataChannel() {
   dataChannel.onopen = () => {
     logEvent('dc:open', { state: dataChannel.readyState });
     statusEl.textContent = 'P2P установлен, замеряем пинг...';
-    playRow.classList.add('visible');
+    if (isHost) playRow.classList.add('visible');
     runClockSync();
     setInterval(runClockSync, RESYNC_INTERVAL_MS);
   };
 
-  dataChannel.onclose = () => {
-    logEvent('dc:close', { state: dataChannel.readyState });
-  };
-
-  dataChannel.onerror = (e) => {
-    logEvent('dc:error', { message: e.message || 'unknown' });
-  };
+  dataChannel.onclose = () => logEvent('dc:close', { state: dataChannel.readyState });
+  dataChannel.onerror = (e) => logEvent('dc:error', { message: e.message || 'unknown' });
 
   dataChannel.onmessage = (event) => {
     let msg;
-    try {
-      msg = JSON.parse(event.data);
-    } catch (e) {
-      logEvent('dc:recv:parse-error', { raw: event.data });
-      return;
-    }
-    // Pings/pongs слишком частые — пишем только тип без payload
+    try { msg = JSON.parse(event.data); }
+    catch (e) { logEvent('dc:recv:parse-error', { raw: event.data }); return; }
+
     if (msg.type === 'ping' || msg.type === 'pong') {
       logEvent('dc:recv', { type: msg.type, t0: msg.t0, t1: msg.t1, t2: msg.t2 });
     } else {
@@ -350,7 +325,7 @@ async function pickTrackFromSearch(results, index) {
   await playCurrent('search-pick');
 }
 
-// --- Яндекс Волна ---
+// --- Волна ---
 async function startWave() {
   try {
     logEvent('ui:startWave');
@@ -403,19 +378,27 @@ async function fetchMoreWave() {
   }
 }
 
-// --- Управление воспроизведением ---
+// --- Воспроизведение ---
 async function playCurrent(caller = 'unknown') {
-  const track = playlist[playlistIndex];
-  logEvent('playCurrent', { caller, playlistIndex, track: track ? { id: track.id, title: track.title } : null, state: snapshotState() });
-  if (!track) return;
+  if (isPlayCurrentBusy) {
+    logEvent('playCurrent:blocked', { caller });
+    return;
+  }
+  isPlayCurrentBusy = true;
+  try {
+    const track = playlist[playlistIndex];
+    logEvent('playCurrent', { caller, playlistIndex, track: track ? { id: track.id, title: track.title } : null, state: snapshotState() });
+    if (!track) return;
 
-  dcSend({ type: 'load', track });
+    dcSend({ type: 'load', track });
+    await loadTrack(track, caller);
+    updateQueueLabel();
 
-  await loadTrack(track, caller);
-  updateQueueLabel();
-
-  if (isHost) {
-    setTimeout(() => sendCommand('play', 0, 'autoplay-after-load'), 1500);
+    if (isHost) {
+      setTimeout(() => sendCommand('play', 0, 'autoplay-after-load'), 1500);
+    }
+  } finally {
+    setTimeout(() => { isPlayCurrentBusy = false; }, 500);
   }
 }
 
@@ -516,7 +499,7 @@ async function loadTrack(track, caller = 'unknown') {
   }
 }
 
-// --- Сетевые сообщения ---
+// --- Сеть ---
 function handleMessage(msg) {
   if (msg.type === 'ping') {
     const t1 = Date.now();
@@ -569,6 +552,10 @@ function finishClockSync() {
 
 // --- Команды ---
 function sendCommand(action, extraPosition, caller = 'unknown') {
+  if (!isHost) {
+    logEvent('sendCommand:blocked', { reason: 'not host', caller });
+    return;
+  }
   if (!audioReady) {
     logEvent('sendCommand:skip', { action, caller, reason: 'audioReady=false' });
     statusEl.textContent = 'Сначала выбери трек';
@@ -583,7 +570,8 @@ function sendCommand(action, extraPosition, caller = 'unknown') {
 }
 
 function scheduleCommand(action, position, hostScheduledAt, isLocalHost = false) {
-  const localTargetTime = isLocalHost ? hostScheduledAt : hostScheduledAt + clockOffset;
+  // ФИКС: знак clockOffset должен быть МИНУС (offset = peer - local, чтобы получить local — вычитаем)
+  const localTargetTime = isLocalHost ? hostScheduledAt : hostScheduledAt - clockOffset;
   const delay = localTargetTime - Date.now();
 
   logEvent('scheduleCommand', { action, position, delay: Number(delay.toFixed(1)), isLocalHost });
@@ -634,7 +622,7 @@ function stopPositionTimer() {
   timeCurrentEl.textContent = formatTime(audio.currentTime);
 }
 
-// --- Аудио-события (важно для дебага) ---
+// --- Аудио-события ---
 audio.addEventListener('play', () => logEvent('audio:play', { currentTime: audio.currentTime, state: snapshotState() }));
 audio.addEventListener('pause', () => logEvent('audio:pause', { currentTime: audio.currentTime, state: snapshotState() }));
 audio.addEventListener('waiting', () => logEvent('audio:waiting', { currentTime: audio.currentTime }));
@@ -694,7 +682,7 @@ muteBtn.addEventListener('click', () => {
 
 updateVolumeUI();
 
-// --- Очередь / UI ---
+// --- Очередь ---
 function updateQueueLabel() {
   if (playlist.length === 0 || playlistIndex < 0) {
     trackQueueEl.textContent = '';
@@ -859,7 +847,6 @@ settingsModal.addEventListener('click', (e) => {
   }
 });
 
-// Кнопка логов (если есть в HTML)
 if (logBtn) {
   logBtn.addEventListener('click', async () => {
     const p = await ipcRenderer.invoke('log-open');
@@ -867,7 +854,7 @@ if (logBtn) {
   });
 }
 
-// --- Инициализация ---
+// --- Init ---
 (async () => {
   try {
     const config = await ipcRenderer.invoke('settings-load');

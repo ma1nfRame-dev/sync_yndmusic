@@ -349,14 +349,12 @@
             font-size: 0.9em;
         }
 
-        /* Кнопка настроек */
-        #settingsBtn {
+        /* Кнопки настроек и логов */
+        #settingsBtn, #logBtn {
             position: fixed;
             top: 15px;
-            right: 15px;
             background: #fff;
             border: 1px solid #ddd;
-            font-size: 20px;
             cursor: pointer;
             z-index: 10;
             width: 42px;
@@ -365,9 +363,23 @@
             transition: background 0.15s, transform 0.15s;
         }
 
+        #settingsBtn {
+            right: 15px;
+            font-size: 20px;
+        }
+
             #settingsBtn:hover {
                 background: #f0f0f0;
                 transform: rotate(45deg);
+            }
+
+        #logBtn {
+            right: 65px;
+            font-size: 18px;
+        }
+
+            #logBtn:hover {
+                background: #f0f0f0;
             }
 
         /* Модальное окно настроек */
@@ -459,28 +471,9 @@
             #settingsSaveBtn:hover {
                 background: #1976d2;
             }
-        #logBtn {
-            position: fixed;
-            top: 15px;
-            right: 65px;
-            background: #fff;
-            border: 1px solid #ddd;
-            font-size: 18px;
-            cursor: pointer;
-            z-index: 10;
-            width: 42px;
-            height: 42px;
-            border-radius: 50%;
-            transition: background 0.15s;
-        }
-
-            #logBtn:hover {
-                background: #f0f0f0;
-            }
     </style>
 </head>
 <body>
-    <!-- Кнопка настроек -->
     <button id="settingsBtn" title="Настройки">⚙️</button>
     <button id="logBtn" title="Открыть папку с логами">📝</button>
 
@@ -527,7 +520,6 @@
         </div>
     </div>
 
-    <!-- Модальное окно настроек -->
     <div id="settingsModal">
         <div class="modal">
             <h2>Настройки</h2>
