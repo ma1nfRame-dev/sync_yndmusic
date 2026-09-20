@@ -1,7 +1,3 @@
-const volumeRow = document.getElementById('volumeRow');
-const volumeBar = document.getElementById('volumeBar');
-const volumeLabel = document.getElementById('volumeLabel');
-const muteBtn = document.getElementById('muteBtn');
 const { ipcRenderer } = require('electron');
 
 const ROOM = 'test-room-1';
@@ -20,12 +16,16 @@ const searchResultsEl = document.getElementById('searchResults');
 const playRow = document.getElementById('playRow');
 const playBtn = document.getElementById('playBtn');
 const pauseBtn = document.getElementById('pauseBtn');
+const volumeRow = document.getElementById('volumeRow');
+const volumeBar = document.getElementById('volumeBar');
+const volumeLabel = document.getElementById('volumeLabel');
+const muteBtn = document.getElementById('muteBtn');
+const waveBtn = document.getElementById('waveBtn');
 
 const audio = new Audio();
 audio.crossOrigin = 'anonymous';
 let audioReady = false;
 let isSeeking = false;
-let currentTrack = null; // { id, title, artists, ... }
 
 let ws;
 let pc = null;
@@ -42,6 +42,11 @@ const RESYNC_INTERVAL_MS = 30000;
 let virtualPosition = 0;
 let isPlaying = false;
 let positionTimer = null;
+
+// --- Состояние Волны ---
+let waveActive = false;
+let waveSessionId = null;
+let waveQueue = [];
 
 const rtcConfig = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -134,7 +139,7 @@ function setupDataChannel() {
   };
 }
 
-// --- Поиск треков ---
+// --- Поиск ---
 async function doSearch() {
   const query = searchInput.value.trim();
   if (!query) return;
@@ -189,18 +194,80 @@ function renderResults(tracks) {
 }
 
 function pickTrack(track) {
-  // 1. Отправляем команду "load" партнёру
+  // Ручной выбор = выходим из режима Волны
+  waveActive = false;
+  waveQueue = [];
+  waveSessionId = null;
+
   if (dataChannel && dataChannel.readyState === 'open') {
     dataChannel.send(JSON.stringify({ type: 'load', track }));
   }
-  // 2. Грузим локально
-  loadTrack(track);
-  // 3. Скрываем список
+  loadTrack(track, { autoPlay: false });
   searchResultsEl.classList.remove('visible');
 }
 
+// --- Яндекс Волна ---
+async function startWave() {
+  try {
+    statusEl.textContent = '📻 Запускаем Волну...';
+    searchResultsEl.classList.remove('visible');
+
+    const { sessionId, tracks } = await ipcRenderer.invoke('radio-start');
+    if (!tracks.length) {
+      statusEl.textContent = '📻 Волна пустая, попробуй ещё раз';
+      return;
+    }
+
+    waveActive = true;
+    waveSessionId = sessionId;
+    waveQueue = tracks.slice(1); // первый играем сразу, остальные — в очередь
+    console.log(`📻 Волна запущена, в очереди ещё ${waveQueue.length}`);
+
+    await playWaveTrack(tracks[0]);
+  } catch (err) {
+    console.error('Wave error:', err);
+    statusEl.textContent = '📻 Ошибка Волны: ' + err.message;
+  }
+}
+
+async function playWaveTrack(track) {
+  if (dataChannel && dataChannel.readyState === 'open') {
+    dataChannel.send(JSON.stringify({ type: 'load', track }));
+  }
+  await loadTrack(track, { autoPlay: true });
+}
+
+async function advanceWave() {
+  if (!waveActive || !isHost) return;
+
+  if (waveQueue.length > 0) {
+    const next = waveQueue.shift();
+    console.log(`📻 Волна → следующий трек (осталось в очереди: ${waveQueue.length})`);
+    await playWaveTrack(next);
+    return;
+  }
+
+  // Очередь пуста — запрашиваем новую порцию
+  try {
+    statusEl.textContent = '📻 Загружаем следующую порцию...';
+    const more = await ipcRenderer.invoke('radio-next', waveSessionId);
+    if (!more.length) {
+      statusEl.textContent = '📻 Волна не вернула треков';
+      waveActive = false;
+      return;
+    }
+    waveQueue = more.slice(1);
+    await playWaveTrack(more[0]);
+  } catch (err) {
+    console.error('Wave next error:', err);
+    statusEl.textContent = '📻 Ошибка Волны: ' + err.message;
+    waveActive = false;
+  }
+}
+
 // --- Загрузка трека ---
-async function loadTrack(track) {
+async function loadTrack(track, opts = {}) {
+  const { autoPlay = false } = opts;
   try {
     audioReady = false;
     seekBar.disabled = true;
@@ -208,7 +275,6 @@ async function loadTrack(track) {
     audio.removeAttribute('src');
     audio.load();
 
-    currentTrack = track;
     statusEl.textContent = 'Загружаем трек...';
     trackInfoEl.textContent = `Загрузка: ${track.artists} — ${track.title}`;
 
@@ -236,9 +302,16 @@ async function loadTrack(track) {
     timeCurrentEl.textContent = '0:00';
     timeTotalEl.textContent = formatTime(audio.duration);
     seekRow.classList.add('visible');
+    volumeRow.style.display = 'flex';
 
-    statusEl.textContent = 'Трек готов. Хост может нажать Play.';
     document.title = `${track.artists} — ${track.title} | Sync Player`;
+    statusEl.textContent = waveActive ? '📻 Волна играет' : 'Трек готов';
+
+    // Автовоспроизведение (используется Волной)
+    if (autoPlay && isHost && dataChannel && dataChannel.readyState === 'open') {
+      // дадим партнёру чуть-чуть времени загрузить трек
+      setTimeout(() => sendCommand('play', 0), 400);
+    }
   } catch (err) {
     console.error('Ошибка загрузки:', err);
     statusEl.textContent = 'Ошибка загрузки: ' + err.message;
@@ -246,7 +319,7 @@ async function loadTrack(track) {
   }
 }
 
-// --- Сообщения по сети ---
+// --- Сообщения ---
 function handleMessage(msg) {
   if (msg.type === 'ping') {
     const t1 = Date.now();
@@ -271,7 +344,8 @@ function handleMessage(msg) {
 
   if (msg.type === 'load') {
     console.log('Получена команда load:', msg.track);
-    loadTrack(msg.track);
+    // Партнёр всегда грузит в обычном режиме, play придёт отдельной командой
+    loadTrack(msg.track, { autoPlay: false });
     return;
   }
 }
@@ -294,7 +368,7 @@ function finishClockSync() {
   statusEl.textContent = `Синхронизация: RTT ${avgRtt.toFixed(0)}мс`;
 }
 
-// --- Команды play/pause/seek ---
+// --- Команды ---
 function sendCommand(action, extraPosition) {
   if (!audioReady) {
     statusEl.textContent = 'Сначала выбери трек';
@@ -309,7 +383,6 @@ function sendCommand(action, extraPosition) {
 function scheduleCommand(action, position, hostScheduledAt, isLocalHost = false) {
   const localTargetTime = isLocalHost ? hostScheduledAt : hostScheduledAt + clockOffset;
   const delay = localTargetTime - Date.now();
-  console.log(`Команда "${action}" → через ${delay.toFixed(0)}мс, позиция ${position.toFixed(2)}с`);
 
   setTimeout(async () => {
     if (!audioReady) return;
@@ -350,11 +423,55 @@ function stopPositionTimer() {
   timeCurrentEl.textContent = formatTime(audio.currentTime);
 }
 
+// --- Автопереход по окончании трека (Волна) ---
+audio.addEventListener('ended', () => {
+  if (isHost && waveActive) {
+    console.log('📻 Трек закончился, переходим к следующему');
+    advanceWave();
+  }
+});
+
+// --- Громкость ---
+let lastVolume = 1;
+
+function updateVolumeUI() {
+  const v = audio.muted ? 0 : audio.volume;
+  volumeBar.value = v;
+  volumeLabel.textContent = Math.round(v * 100) + '%';
+  if (audio.muted || audio.volume === 0) muteBtn.textContent = '🔇';
+  else if (audio.volume < 0.34) muteBtn.textContent = '🔈';
+  else if (audio.volume < 0.67) muteBtn.textContent = '🔉';
+  else muteBtn.textContent = '🔊';
+}
+
+volumeBar.addEventListener('input', () => {
+  const v = parseFloat(volumeBar.value);
+  audio.muted = false;
+  audio.volume = v;
+  if (v > 0) lastVolume = v;
+  updateVolumeUI();
+});
+
+muteBtn.addEventListener('click', () => {
+  if (audio.muted || audio.volume === 0) {
+    audio.muted = false;
+    audio.volume = lastVolume > 0 ? lastVolume : 1;
+  } else {
+    lastVolume = audio.volume;
+    audio.muted = true;
+  }
+  updateVolumeUI();
+});
+
+updateVolumeUI();
+
 // --- UI ---
 searchBtn.addEventListener('click', doSearch);
 searchInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') doSearch();
 });
+
+waveBtn.addEventListener('click', startWave);
 
 seekBar.addEventListener('input', () => {
   isSeeking = true;
@@ -376,46 +493,3 @@ window.addEventListener('keydown', (e) => {
     if (audio.paused) audio.play(); else audio.pause();
   }
 });
-
-// --- Громкость ---
-let lastVolume = 1; // запоминаем громкость до mute
-
-function updateVolumeUI() {
-  const v = audio.muted ? 0 : audio.volume;
-  volumeBar.value = v;
-  volumeLabel.textContent = Math.round(v * 100) + '%';
-
-  if (audio.muted || audio.volume === 0) {
-    muteBtn.textContent = '🔇';
-  } else if (audio.volume < 0.34) {
-    muteBtn.textContent = '🔈';
-  } else if (audio.volume < 0.67) {
-    muteBtn.textContent = '🔉';
-  } else {
-    muteBtn.textContent = '🔊';
-  }
-}
-
-volumeBar.addEventListener('input', () => {
-  const v = parseFloat(volumeBar.value);
-  audio.muted = false;
-  audio.volume = v;
-  if (v > 0) lastVolume = v;
-  updateVolumeUI();
-});
-
-muteBtn.addEventListener('click', () => {
-  if (audio.muted || audio.volume === 0) {
-    // Возвращаем звук
-    audio.muted = false;
-    audio.volume = lastVolume > 0 ? lastVolume : 1;
-  } else {
-    // Запоминаем текущую громкость и глушим
-    lastVolume = audio.volume;
-    audio.muted = true;
-  }
-  updateVolumeUI();
-});
-
-// Инициализируем UI
-updateVolumeUI();
