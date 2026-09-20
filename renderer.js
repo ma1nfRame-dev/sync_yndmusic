@@ -41,6 +41,9 @@ const waveBtn = document.getElementById('waveBtn');
 const queuePanel = document.getElementById('queuePanel');
 const queueList = document.getElementById('queueList');
 
+const hostBadge = document.getElementById('hostBadge');
+const transferHostBtn = document.getElementById('transferHostBtn');
+
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsModal = document.getElementById('settingsModal');
 const ymTokenInput = document.getElementById('ymTokenInput');
@@ -50,6 +53,7 @@ const roomNameInput = document.getElementById('roomNameInput');
 const settingsSaveBtn = document.getElementById('settingsSaveBtn');
 const settingsCancelBtn = document.getElementById('settingsCancelBtn');
 const logBtn = document.getElementById('logBtn');
+const oauthLoginBtn = document.getElementById('oauthLoginBtn');
 
 // --- Аудио ---
 const audio = new Audio();
@@ -130,6 +134,28 @@ function snapshotState() {
   };
 }
 
+// --- UI обновление по роли ---
+function updateUIForRole() {
+  if (isHost) {
+    hostBadge.textContent = '👑 Хост';
+    hostBadge.style.color = '#1e88e5';
+    searchRow.classList.add('visible');
+    playRow.classList.add('visible');
+    transferHostBtn.style.display = 'inline-block';
+    queuePanel.classList.remove('readonly');
+    if (audioReady) seekBar.disabled = false;
+  } else {
+    hostBadge.textContent = '🎧 Слушатель';
+    hostBadge.style.color = '#888';
+    searchRow.classList.remove('visible');
+    playRow.classList.remove('visible');
+    transferHostBtn.style.display = 'none';
+    queuePanel.classList.add('readonly');
+    seekBar.disabled = true;
+  }
+  logEvent('ui:role-updated', { isHost, role });
+}
+
 // --- WebSocket ---
 function initWebSocket() {
   logEvent('ws:init', { url: SIGNALING_URL, room: ROOM });
@@ -158,8 +184,9 @@ function initWebSocket() {
 
     if (msg.type === 'role') {
       role = msg.role;
+      // Изначально хост = offerer
       isHost = role === 'offerer';
-      if (isHost) searchRow.classList.add('visible');
+      updateUIForRole();
       return;
     }
 
@@ -227,7 +254,7 @@ function setupDataChannel() {
   dataChannel.onopen = () => {
     logEvent('dc:open', { state: dataChannel.readyState });
     statusEl.textContent = 'P2P установлен, замеряем пинг...';
-    if (isHost) playRow.classList.add('visible');
+    updateUIForRole();
     runClockSync();
     setInterval(runClockSync, RESYNC_INTERVAL_MS);
   };
@@ -256,6 +283,18 @@ function dcSend(msg) {
   }
   dataChannel.send(JSON.stringify(msg));
   return true;
+}
+
+// --- Синхронизация плейлиста с партнёром ---
+function broadcastPlaylist() {
+  if (!isHost) return;
+  dcSend({
+    type: 'playlist-update',
+    playlist,
+    playlistIndex,
+    playlistMode,
+    waveSessionId
+  });
 }
 
 // --- Поиск ---
@@ -367,6 +406,7 @@ async function fetchMoreWave() {
     }
     playlist = playlist.concat(more);
     updateQueueLabel();
+    broadcastPlaylist();
     logEvent('wave:fetchMore:done', { added: more.length, total: playlist.length });
     return true;
   } catch (err) {
@@ -389,6 +429,9 @@ async function playCurrent(caller = 'unknown') {
     const track = playlist[playlistIndex];
     logEvent('playCurrent', { caller, playlistIndex, track: track ? { id: track.id, title: track.title } : null, state: snapshotState() });
     if (!track) return;
+
+    // Синхронизируем плейлист с партнёром
+    broadcastPlaylist();
 
     dcSend({ type: 'load', track });
     await loadTrack(track, caller);
@@ -479,7 +522,7 @@ async function loadTrack(track, caller = 'unknown') {
 
     seekBar.max = audio.duration;
     seekBar.value = 0;
-    seekBar.disabled = false;
+    seekBar.disabled = !isHost; // не-хост не может тащить ползунок
     timeCurrentEl.textContent = '0:00';
     timeTotalEl.textContent = formatTime(audio.duration);
     seekRow.classList.add('visible');
@@ -529,6 +572,34 @@ function handleMessage(msg) {
     return;
   }
 
+  if (msg.type === 'playlist-update') {
+    logEvent('handle:playlist-update', { len: msg.playlist?.length, idx: msg.playlistIndex, mode: msg.playlistMode });
+    playlist = msg.playlist || [];
+    playlistIndex = msg.playlistIndex ?? -1;
+    playlistMode = msg.playlistMode || null;
+    waveSessionId = msg.waveSessionId || null;
+    updateQueueLabel();
+    return;
+  }
+
+  if (msg.type === 'host-changed') {
+    logEvent('handle:host-changed', { newHostRole: msg.newHostRole, myRole: role });
+    const iAmNewHost = (msg.newHostRole === role);
+    isHost = iAmNewHost;
+
+    if (msg.playlist) {
+      playlist = msg.playlist;
+      playlistIndex = msg.playlistIndex ?? -1;
+      playlistMode = msg.playlistMode || null;
+      waveSessionId = msg.waveSessionId || null;
+      updateQueueLabel();
+    }
+
+    updateUIForRole();
+    statusEl.textContent = isHost ? '👑 Ты теперь хост' : '🎧 Ты слушатель';
+    return;
+  }
+
   logEvent('handle:unknown', { msg });
 }
 
@@ -570,7 +641,6 @@ function sendCommand(action, extraPosition, caller = 'unknown') {
 }
 
 function scheduleCommand(action, position, hostScheduledAt, isLocalHost = false) {
-  // ФИКС: знак clockOffset должен быть МИНУС (offset = peer - local, чтобы получить local — вычитаем)
   const localTargetTime = isLocalHost ? hostScheduledAt : hostScheduledAt - clockOffset;
   const delay = localTargetTime - Date.now();
 
@@ -757,6 +827,35 @@ async function jumpToTrack(index) {
   await playCurrent('jump');
 }
 
+// --- Передача хоста ---
+function transferHost() {
+  if (!isHost) {
+    logEvent('transferHost:blocked', { reason: 'not host' });
+    return;
+  }
+  if (!dataChannel || dataChannel.readyState !== 'open') {
+    statusEl.textContent = 'Партнёр не подключён';
+    return;
+  }
+
+  const newHostRole = role === 'offerer' ? 'answerer' : 'offerer';
+  logEvent('transferHost:send', { newHostRole, playlistLen: playlist.length, idx: playlistIndex });
+
+  dcSend({
+    type: 'host-changed',
+    newHostRole,
+    playlist,
+    playlistIndex,
+    playlistMode,
+    waveSessionId
+  });
+
+  // Локально снимаем с себя права
+  isHost = false;
+  updateUIForRole();
+  statusEl.textContent = '👑 Ты передал права хоста партнёру';
+}
+
 // --- UI события ---
 searchBtn.addEventListener('click', doSearch);
 searchInput.addEventListener('keydown', (e) => {
@@ -764,13 +863,16 @@ searchInput.addEventListener('keydown', (e) => {
 });
 
 waveBtn.addEventListener('click', startWave);
+transferHostBtn.addEventListener('click', transferHost);
 
 seekBar.addEventListener('input', () => {
+  if (!isHost) return;
   isSeeking = true;
   timeCurrentEl.textContent = formatTime(parseFloat(seekBar.value));
 });
 
 seekBar.addEventListener('change', () => {
+  if (!isHost) return;
   const newPos = parseFloat(seekBar.value);
   logEvent('ui:seek', { newPos });
   isSeeking = false;
@@ -784,13 +886,13 @@ nextBtn.addEventListener('click', () => nextTrack('button'));
 
 window.addEventListener('keydown', (e) => {
   const inInput = e.target.tagName === 'INPUT';
-  if (e.code === 'Space' && audioReady && !inInput) {
+  if (e.code === 'Space' && audioReady && !inInput && isHost) {
     e.preventDefault();
     if (audio.paused) audio.play(); else audio.pause();
-  } else if (e.code === 'ArrowRight' && !inInput) {
+  } else if (e.code === 'ArrowRight' && !inInput && isHost) {
     e.preventDefault();
     nextTrack('hotkey-right');
-  } else if (e.code === 'ArrowLeft' && !inInput) {
+  } else if (e.code === 'ArrowLeft' && !inInput && isHost) {
     e.preventDefault();
     prevTrack('hotkey-left');
   }
@@ -810,40 +912,6 @@ settingsBtn.addEventListener('click', async () => {
     logEvent('settings:load:error', { error: err.message });
   }
   settingsModal.classList.add('visible');
-});
-
-const oauthLoginBtn = document.getElementById('oauthLoginBtn');
-
-oauthLoginBtn.addEventListener('click', async () => {
-  try {
-    logEvent('ui:oauth-login:start');
-    statusEl.textContent = 'Открываем окно авторизации Яндекса...';
-
-    const result = await ipcRenderer.invoke('oauth-login');
-
-    if (result.success) {
-      logEvent('ui:oauth-login:success', { hasToken: true, expiresIn: result.expiresIn });
-      ymTokenInput.value = result.accessToken;
-      statusEl.textContent = 'Авторизация успешна! Токен сохранён.';
-      // Автоматически сохраняем настройки, чтобы токен записался в файл
-      await ipcRenderer.invoke('settings-save', {
-        ymToken: ymTokenInput.value,
-        ymUid: ymUidInput.value,
-        signalingUrl: signalingUrlInput.value,
-        roomName: roomNameInput.value
-      });
-      // Можно сразу закрыть модалку и перезагрузить, чтобы применить токен
-      settingsModal.classList.remove('visible');
-      window.location.reload();
-    } else {
-      logEvent('ui:oauth-login:failed', { error: result.error });
-      statusEl.textContent = 'Ошибка авторизации: ' + result.error;
-      alert('Не удалось войти через Яндекс: ' + result.error);
-    }
-  } catch (err) {
-    logEvent('ui:oauth-login:error', { error: err.message });
-    alert('Ошибка: ' + err.message);
-  }
 });
 
 settingsCancelBtn.addEventListener('click', () => {
@@ -888,6 +956,38 @@ if (logBtn) {
   });
 }
 
+if (oauthLoginBtn) {
+  oauthLoginBtn.addEventListener('click', async () => {
+    try {
+      logEvent('ui:oauth-login:start');
+      statusEl.textContent = 'Открываем окно авторизации Яндекса...';
+
+      const result = await ipcRenderer.invoke('oauth-login');
+
+      if (result.success) {
+        logEvent('ui:oauth-login:success', { hasToken: true, expiresIn: result.expiresIn });
+        ymTokenInput.value = result.accessToken;
+        statusEl.textContent = 'Авторизация успешна! Токен сохранён.';
+        await ipcRenderer.invoke('settings-save', {
+          ymToken: ymTokenInput.value,
+          ymUid: ymUidInput.value,
+          signalingUrl: signalingUrlInput.value,
+          roomName: roomNameInput.value
+        });
+        settingsModal.classList.remove('visible');
+        window.location.reload();
+      } else {
+        logEvent('ui:oauth-login:failed', { error: result.error });
+        statusEl.textContent = 'Ошибка авторизации: ' + result.error;
+        alert('Не удалось войти через Яндекс: ' + result.error);
+      }
+    } catch (err) {
+      logEvent('ui:oauth-login:error', { error: err.message });
+      alert('Ошибка: ' + err.message);
+    }
+  });
+}
+
 // --- Init ---
 (async () => {
   try {
@@ -900,5 +1000,6 @@ if (logBtn) {
     logEvent('init:settings-load-error', { error: err.message });
   }
   logEvent('init:session-start', { room: ROOM, url: SIGNALING_URL });
+  updateUIForRole();
   initWebSocket();
 })();

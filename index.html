@@ -61,6 +61,29 @@
                 display: flex;
             }
 
+        #transferHostBtn {
+            display: none;
+            margin: 0 0 12px 0;
+            padding: 8px 16px;
+            font-size: 13px;
+            cursor: pointer;
+            background: #fff8e1;
+            border: 1px solid #ffd54f;
+            border-radius: 6px;
+            font-weight: 600;
+        }
+
+            #transferHostBtn:hover {
+                background: #ffecb3;
+            }
+
+        #hostBadge {
+            font-size: 14px;
+            font-weight: normal;
+            margin-left: 8px;
+            color: #888;
+        }
+
         /* Прогресс-бар */
         #seekRow {
             display: none;
@@ -104,6 +127,11 @@
                 cursor: not-allowed;
                 opacity: 0.5;
             }
+
+                #seekBar:disabled::-webkit-slider-thumb {
+                    background: #999;
+                    cursor: not-allowed;
+                }
 
         /* Результаты поиска */
         #searchResults {
@@ -304,6 +332,14 @@
                     font-weight: 700;
                 }
 
+        #queuePanel.readonly .queueItem {
+            cursor: default;
+        }
+
+            #queuePanel.readonly .queueItem:hover {
+                background: inherit;
+            }
+
         .queueCover {
             width: 40px;
             height: 40px;
@@ -471,6 +507,23 @@
             #settingsSaveBtn:hover {
                 background: #1976d2;
             }
+
+        #oauthLoginBtn {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 16px;
+            background: #fc3f1d;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+            #oauthLoginBtn:hover {
+                background: #e0361a;
+            }
     </style>
 </head>
 <body>
@@ -479,8 +532,10 @@
 
     <div id="layout">
         <div id="mainColumn">
-            <h1>Sync Player</h1>
+            <h1>Sync Player <span id="hostBadge">—</span></h1>
             <p id="status">Ожидание подключения...</p>
+
+            <button id="transferHostBtn" title="Сделать партнёра хостом">👑 Передать хост</button>
 
             <div id="trackInfo">
                 <div id="trackTitle">Трек не загружен</div>
@@ -530,9 +585,7 @@
                 <div class="hint">Или нажмите кнопку ниже для авторизации через Яндекс</div>
             </div>
 
-            <button id="oauthLoginBtn" style="width:100%; padding:10px; margin-bottom:16px; background:#fc3f1d; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:14px; font-weight:600;">
-                Войти через Яндекс
-            </button>
+            <button id="oauthLoginBtn">Войти через Яндекс</button>
 
             <div class="field">
                 <label>UID (ID пользователя)</label>
