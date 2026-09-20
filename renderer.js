@@ -55,7 +55,23 @@ let waveSessionId = null;
 let isLoadingNext = false;
 
 const rtcConfig = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  iceServers: [
+    // STUN (для прямого соединения)
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+
+    // TURN (резервный ретранслятор)
+    {
+      urls: [
+        'turn:turn.evan-brass.net',
+        'turn:turn.evan-brass.net?transport=tcp', // TCP — если UDP заблокирован
+        'turns:turn.evan-brass.net:443?transport=tcp' // TLS через 443 — работает почти везде
+      ],
+      username: 'user',
+      credential: 'password'
+    }
+  ]
 };
 
 function formatTime(sec) {
