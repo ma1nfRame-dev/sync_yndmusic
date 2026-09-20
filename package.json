@@ -1,0 +1,31 @@
+{
+  "name": "sync_yndmusic",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "esbuild renderer.js --bundle --outfile=renderer.bundle.js --platform=browser",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ma1nfRame-dev/sync_yndmusic.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/ma1nfRame-dev/sync_yndmusic/issues"
+  },
+  "homepage": "https://github.com/ma1nfRame-dev/sync_yndmusic#readme",
+  "devDependencies": {
+    "electron": "^44.4.3",
+    "esbuild": "^0.28.2"
+  },
+  "dependencies": {
+    "@trystero-p2p/torrent": "^0.25.4",
+    "trystero": "^0.25.4"
+  }
+}
