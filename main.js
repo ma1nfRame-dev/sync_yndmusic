@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -8,15 +8,40 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
-// --- Простое хранилище настроек (JSON в userData) ---
+// --- Логирование в файл ---
+const LOG_DIR = path.join(__dirname, 'logs');
+if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+const LOG_FILE = path.join(
+  LOG_DIR,
+  `sync-${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}.jsonl`
+);
+console.log('📝 Лог пишется в:', LOG_FILE);
+
+// Запись лога из renderer (fire-and-forget)
+ipcMain.on('log-write', (_event, entry) => {
+  try {
+    fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n', 'utf-8');
+  } catch (e) {
+    console.error('Не смог записать лог:', e.message);
+  }
+});
+
+// Открыть папку с логами
+ipcMain.handle('log-open', () => {
+  shell.showItemInFolder(LOG_FILE);
+  return LOG_FILE;
+});
+
+ipcMain.handle('log-path', () => LOG_FILE);
+
+// --- Настройки (простой JSON) ---
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'sync-settings.json');
 }
 
 function loadSettings() {
   try {
-    const raw = fs.readFileSync(getSettingsPath(), 'utf-8');
-    return JSON.parse(raw);
+    return JSON.parse(fs.readFileSync(getSettingsPath(), 'utf-8'));
   } catch (e) {
     return {};
   }
@@ -43,7 +68,6 @@ function getApi() {
       let access_token = s.ymToken;
       let uid = s.ymUid;
 
-      // Fallback на .env
       if (!access_token) access_token = process.env.YM_TOKEN;
       if (!uid) uid = process.env.YM_UID;
 
@@ -155,7 +179,7 @@ ipcMain.handle('settings-save', async (_event, config) => {
     roomName: String(config.roomName || 'test-room-1')
   });
   if (ok) {
-    apiPromise = null; // пересоздадим API с новым токеном
+    apiPromise = null;
     console.log('✅ Настройки сохранены в', getSettingsPath());
     return { success: true };
   }

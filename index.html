@@ -459,11 +459,30 @@
             #settingsSaveBtn:hover {
                 background: #1976d2;
             }
+        #logBtn {
+            position: fixed;
+            top: 15px;
+            right: 65px;
+            background: #fff;
+            border: 1px solid #ddd;
+            font-size: 18px;
+            cursor: pointer;
+            z-index: 10;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            transition: background 0.15s;
+        }
+
+            #logBtn:hover {
+                background: #f0f0f0;
+            }
     </style>
 </head>
 <body>
     <!-- Кнопка настроек -->
     <button id="settingsBtn" title="Настройки">⚙️</button>
+    <button id="logBtn" title="Открыть папку с логами">📝</button>
 
     <div id="layout">
         <div id="mainColumn">
