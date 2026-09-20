@@ -70,7 +70,7 @@ function getApi() {
       if (!uid) uid = process.env.YM_UID;
 
       if (!access_token || !uid) {
-        throw new Error('Токен Яндекс.Музыки не настроен. Открой ⚙️ Настройки и введи токен и UID.');
+        throw new Error('Токен Яндекс.Музыки не настроен. Открой ⚙️ Настройки и введи токен и UID, либо авторизуйся через Яндекс.');
       }
 
       const cfg = {
@@ -182,6 +182,65 @@ ipcMain.handle('settings-save', async (_event, config) => {
     return { success: true };
   }
   return { success: false, error: 'Не смог записать файл' };
+});
+
+// --- OAuth через Яндекс ---
+const YANDEX_CLIENT_ID = '23cabbbdc6cd418abb4b39c32c41195d'; // client_id от официального приложения Яндекс.Музыки для Windows
+const YANDEX_AUTH_URL = `https://oauth.yandex.ru/authorize?response_type=token&client_id=${YANDEX_CLIENT_ID}`;
+
+ipcMain.handle('oauth-login', async () => {
+  return new Promise((resolve, reject) => {
+    const authWindow = new BrowserWindow({
+      width: 800,
+      height: 700,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true
+      }
+    });
+
+    let resolved = false;
+
+    function handleUrl(url) {
+      if (resolved) return;
+      // Ищем токен в хэш-части URL (Implicit Flow)
+      if (url.includes('#access_token=')) {
+        resolved = true;
+        const params = new URLSearchParams(url.split('#')[1]);
+        const accessToken = params.get('access_token');
+        const expiresIn = params.get('expires_in');
+
+        if (accessToken) {
+          console.log('✅ OAuth токен получен');
+          // Сохраняем токен в настройки
+          const s = loadSettings();
+          s.ymToken = accessToken;
+          saveSettings(s);
+          apiPromise = null; // сбрасываем кеш API
+          resolve({ success: true, accessToken, expiresIn });
+        } else {
+          resolve({ success: false, error: 'Токен не найден в URL' });
+        }
+        authWindow.close();
+      }
+    }
+
+    // Слушаем все попытки навигации
+    authWindow.webContents.on('will-navigate', (event, url) => {
+      handleUrl(url);
+    });
+    authWindow.webContents.on('will-redirect', (event, url) => {
+      handleUrl(url);
+    });
+
+    authWindow.on('closed', () => {
+      if (!resolved) {
+        resolve({ success: false, error: 'Окно авторизации закрыто пользователем' });
+      }
+    });
+
+    authWindow.loadURL(YANDEX_AUTH_URL);
+  });
 });
 
 function createWindow() {
