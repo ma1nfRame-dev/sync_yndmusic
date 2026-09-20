@@ -73,12 +73,9 @@ let isAdvancing = false;  // защита от двойного nextTrack
 
 const rtcConfig = {
   iceServers: [
-    // STUN (для прямого соединения)
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-
-    // TURN (резервный ретранслятор)
     {
       urls: [
         'turn:turn.evan-brass.net',
@@ -481,7 +478,6 @@ async function loadTrack(track) {
     statusEl.textContent = 'Ошибка загрузки: ' + err.message;
     trackTitleEl.textContent = 'Не удалось загрузить';
   } finally {
-    // Даём событиям устаканиться, чтобы фантомный 'ended' не сработал
     setTimeout(() => { isReloading = false; }, 500);
   }
 }
@@ -679,12 +675,16 @@ window.addEventListener('keydown', (e) => {
 
 // --- Настройки ---
 settingsBtn.addEventListener('click', async () => {
-  const config = await ipcRenderer.invoke('settings-load');
-  if (config) {
-    ymTokenInput.value = config.ymToken || '';
-    ymUidInput.value = config.ymUid || '';
-    signalingUrlInput.value = config.signalingUrl || 'ws://localhost:8080';
-    roomNameInput.value = config.roomName || 'test-room-1';
+  try {
+    const config = await ipcRenderer.invoke('settings-load');
+    if (config) {
+      ymTokenInput.value = config.ymToken || '';
+      ymUidInput.value = config.ymUid || '';
+      signalingUrlInput.value = config.signalingUrl || 'ws://localhost:8080';
+      roomNameInput.value = config.roomName || 'test-room-1';
+    }
+  } catch (err) {
+    console.error('Не смог загрузить настройки:', err);
   }
   settingsModal.classList.add('visible');
 });
@@ -701,17 +701,21 @@ settingsSaveBtn.addEventListener('click', async () => {
     roomName: roomNameInput.value.trim() || 'test-room-1'
   };
 
-  const result = await ipcRenderer.invoke('settings-save', config);
-  if (result.success) {
-    console.log('Настройки сохранены, перезагружаем окно...');
-    settingsModal.classList.remove('visible');
-    window.location.reload();
-  } else {
-    alert('Ошибка сохранения: ' + result.error);
+  try {
+    const result = await ipcRenderer.invoke('settings-save', config);
+    if (result.success) {
+      console.log('Настройки сохранены, перезагружаем окно...');
+      settingsModal.classList.remove('visible');
+      window.location.reload();
+    } else {
+      alert('Ошибка сохранения: ' + result.error);
+    }
+  } catch (err) {
+    console.error('Ошибка сохранения:', err);
+    alert('Ошибка сохранения: ' + err.message);
   }
 });
 
-// Закрыть по клику на фон
 settingsModal.addEventListener('click', (e) => {
   if (e.target === settingsModal) {
     settingsModal.classList.remove('visible');

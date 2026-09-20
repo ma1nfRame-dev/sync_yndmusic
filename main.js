@@ -1,16 +1,62 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
+const fs = require('fs');
+
+app.commandLine.appendSwitch('disable-http-cache');
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
+// --- Простое хранилище настроек (JSON в userData) ---
+function getSettingsPath() {
+  return path.join(app.getPath('userData'), 'sync-settings.json');
+}
+
+function loadSettings() {
+  try {
+    const raw = fs.readFileSync(getSettingsPath(), 'utf-8');
+    return JSON.parse(raw);
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveSettings(obj) {
+  try {
+    fs.writeFileSync(getSettingsPath(), JSON.stringify(obj, null, 2), 'utf-8');
+    return true;
+  } catch (e) {
+    console.error('Не смог сохранить настройки:', e);
+    return false;
+  }
+}
+
+// --- API Яндекс.Музыки ---
 let apiPromise = null;
 function getApi() {
   if (!apiPromise) {
     apiPromise = (async () => {
       const { YMApi, WrappedYMApi } = require('yamd2');
+
+      const s = loadSettings();
+      let access_token = s.ymToken;
+      let uid = s.ymUid;
+
+      // Fallback на .env
+      if (!access_token) access_token = process.env.YM_TOKEN;
+      if (!uid) uid = process.env.YM_UID;
+
+      if (!access_token || !uid) {
+        throw new Error('Токен Яндекс.Музыки не настроен. Открой ⚙️ Настройки и введи токен и UID.');
+      }
+
       const cfg = {
-        access_token: process.env.YM_TOKEN,
-        uid: Number(process.env.YM_UID)
+        access_token: String(access_token),
+        uid: Number(uid)
       };
+
+      console.log('🔐 Инициализация yamd2 с uid =', cfg.uid);
       const api = new YMApi();
       const wrapped = new WrappedYMApi();
       await api.init(cfg);
@@ -22,7 +68,7 @@ function getApi() {
   return apiPromise;
 }
 
-// --- Нормализация трека в удобный для UI вид ---
+// --- Нормализация ---
 function normalizeTrack(t) {
   return {
     id: t.id || t.realId,
@@ -37,8 +83,6 @@ function normalizeTrack(t) {
   };
 }
 
-// --- Разворачивание ответа rotor-сессии ---
-// Ответ имеет вид: { batchId, sequence: [ { liked, track: {...} }, ... ] }
 function extractRotorTracks(batch) {
   const sequence = batch?.sequence || [];
   return sequence
@@ -60,7 +104,7 @@ ipcMain.handle('search-tracks', async (_event, query) => {
   return tracks;
 });
 
-// --- Прямая ссылка на аудио ---
+// --- Прямая ссылка ---
 ipcMain.handle('get-audio-url', async (_event, trackId) => {
   const { wrapped } = await getApi();
   const trackUrl = `https://music.yandex.ru/track/${trackId}`;
@@ -69,40 +113,58 @@ ipcMain.handle('get-audio-url', async (_event, trackId) => {
   return info.downloadInfoUrl;
 });
 
-// --- Яндекс Волна: старт сессии ---
+// --- Волна ---
 ipcMain.handle('radio-start', async () => {
   const { api } = await getApi();
-
   console.log('📻 Создаём rotor-сессию...');
   const session = await api.radio.createRotorSession();
-  console.log('📻 Ответ createRotorSession:', JSON.stringify(session, null, 2));
-
   const sessionId = session?.sessionId || session?.id || session?.radioSessionId;
-  if (!sessionId) {
-    throw new Error('Не удалось получить sessionId из ответа createRotorSession');
-  }
-
+  if (!sessionId) throw new Error('Не удалось получить sessionId');
   console.log('📻 sessionId:', sessionId);
   const batch = await api.radio.postRotorSessionTracks(sessionId);
   const tracks = extractRotorTracks(batch);
-
-  console.log(`📻 Волна запущена, треков в первой порции: ${tracks.length}`);
+  console.log(`📻 Волна запущена, треков: ${tracks.length}`);
   return { sessionId, tracks };
 });
 
-// --- Яндекс Волна: следующая порция ---
 ipcMain.handle('radio-next', async (_event, sessionId) => {
   const { api } = await getApi();
-  console.log('📻 Запрашиваем следующую порцию для sessionId:', sessionId);
+  console.log('📻 Следующая порция для sessionId:', sessionId);
   const batch = await api.radio.postRotorSessionTracks(sessionId);
   const tracks = extractRotorTracks(batch);
   console.log(`📻 Получено ещё ${tracks.length} треков`);
   return tracks;
 });
 
+// --- Настройки ---
+ipcMain.handle('settings-load', async () => {
+  const s = loadSettings();
+  return {
+    ymToken: s.ymToken || '',
+    ymUid: s.ymUid || '',
+    signalingUrl: s.signalingUrl || 'ws://localhost:8080',
+    roomName: s.roomName || 'test-room-1'
+  };
+});
+
+ipcMain.handle('settings-save', async (_event, config) => {
+  const ok = saveSettings({
+    ymToken: String(config.ymToken || ''),
+    ymUid: String(config.ymUid || ''),
+    signalingUrl: String(config.signalingUrl || 'ws://localhost:8080'),
+    roomName: String(config.roomName || 'test-room-1')
+  });
+  if (ok) {
+    apiPromise = null; // пересоздадим API с новым токеном
+    console.log('✅ Настройки сохранены в', getSettingsPath());
+    return { success: true };
+  }
+  return { success: false, error: 'Не смог записать файл' };
+});
+
 function createWindow() {
   const win = new BrowserWindow({
-    width: 900,
+    width: 1200,
     height: 700,
     webPreferences: {
       nodeIntegration: true,
@@ -122,5 +184,3 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
-app.commandLine.appendSwitch('disable-http-cache');
-app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');

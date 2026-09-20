@@ -27,7 +27,6 @@
   "dependencies": {
     "@trystero-p2p/torrent": "^0.25.4",
     "dotenv": "^18.0.1",
-    "electron-settings": "^4.0.4",
     "trystero": "^0.25.4",
     "yamd2": "^1.5.2"
   }
