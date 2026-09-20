@@ -43,19 +43,23 @@
             <button id="transferHostBtn" title="Сделать партнёра хостом">👑 Передать хост</button>
 
             <div id="trackInfo">
-                <div id="trackArtworkWrap">
-                    <img id="trackArtwork" alt="Обложка текущего трека" />
+                <div id="trackMainRow">
+                    <div id="trackArtworkWrap">
+                        <img id="trackArtwork" alt="Обложка текущего трека" />
+                    </div>
+                    <div id="trackText">
+                        <div id="trackTitle">Трек не загружен</div>
+                        <div id="trackQueue"></div>
+                    </div>
                 </div>
-                <div id="trackText">
-                    <div id="trackTitle">Трек не загружен</div>
-                    <div id="trackQueue"></div>
-                </div>
-            </div>
 
-            <div id="seekRow">
-                <span id="timeCurrent">0:00</span>
-                <input type="range" id="seekBar" min="0" max="1" step="0.01" value="0" disabled />
-                <span id="timeTotal">0:00</span>
+                <div id="seekRow">
+                    <div id="trackProgressTimes">
+                        <span id="timeCurrent">0:00</span>
+                        <span id="timeTotal">0:00</span>
+                    </div>
+                    <input type="range" id="seekBar" min="0" max="1" step="0.01" value="0" disabled />
+                </div>
             </div>
 
             <div id="volumeRow" style="display:none;">
@@ -93,21 +97,23 @@
         </div>
     </div>
 
-    <!-- Текст текущего трека -->
+    <!-- Караоке-поверхность внутри этого же окна -->
     <section id="lyricsPanel" hidden aria-live="polite">
-        <div id="lyricsHeader">
-            <div id="lyricsHeading">
-                <span id="lyricsEyebrow">ТЕКСТ ТРЕКА</span>
-                <span id="lyricsTrackName">—</span>
+        <div id="lyricsModal" role="dialog" aria-modal="true" aria-labelledby="lyricsTrackName">
+            <div id="lyricsHeader">
+                <div id="lyricsHeading">
+                    <span id="lyricsEyebrow">КАРАОКЕ</span>
+                    <span id="lyricsTrackName">—</span>
+                </div>
+                <button id="lyricsCloseBtn" type="button" title="Закрыть текст" aria-label="Закрыть текст">×</button>
             </div>
-            <button id="lyricsCloseBtn" type="button" title="Скрыть текст" aria-label="Скрыть текст">×</button>
-        </div>
 
-        <div id="lyricsState" class="lyricsState">
-            Нажми «Текст», чтобы загрузить текст песни.
-        </div>
+            <div id="lyricsState" class="lyricsState">
+                Нажми «Текст», чтобы открыть караоке.
+            </div>
 
-        <div id="lyricsContent" class="lyricsContent karaokeLyrics" role="listbox" aria-label="Текст песни"></div>
+            <div id="lyricsContent" class="lyricsContent karaokeLyrics" role="listbox" aria-label="Текст песни"></div>
+        </div>
     </section>
 
     <div id="settingsModal">

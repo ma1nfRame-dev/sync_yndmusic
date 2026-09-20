@@ -230,9 +230,26 @@ if (titlebarDragArea) {
 
 syncMaximizeButtonState();
 
+function updateTrackProgressUI(currentTime = audio.currentTime) {
+    if (!seekBar) return;
+
+    const duration = Number(audio.duration) || 0;
+    const position = Number(currentTime) || 0;
+    const percent = duration > 0
+        ? Math.max(0, Math.min(100, (position / duration) * 100))
+        : 0;
+
+    seekBar.style.setProperty('--progress', `${percent}%`);
+    seekBar.value = duration > 0 ? Math.min(position, duration) : 0;
+
+    if (timeCurrentEl) timeCurrentEl.textContent = formatTime(position);
+    if (timeTotalEl && duration > 0) timeTotalEl.textContent = formatTime(duration);
+}
+
 function updatePlaybackUI(playing) {
     const isActuallyPlaying = Boolean(playing) && audioReady && !audio.paused;
     isPlaying = isActuallyPlaying;
+    updateTrackProgressUI(audio.currentTime);
 
     playBtn.classList.toggle('active', isActuallyPlaying);
     pauseBtn.classList.toggle('active', !isActuallyPlaying && audioReady);
@@ -684,6 +701,7 @@ function closeLyricsPanel() {
     if (!lyricsPanel) return;
     lyricsPanel.hidden = true;
     lyricsBtn?.classList.remove('active');
+    document.body.classList.remove('lyrics-open');
 }
 
 function setLyricsState(text, type = '') {
@@ -996,6 +1014,7 @@ async function openLyricsForCurrentTrack() {
     const requestId = ++lyricsRequestId;
     lyricsBtn.classList.add('active');
     lyricsPanel.hidden = false;
+    document.body.classList.add('lyrics-open');
 
     if (lyricsTrackNameEl) {
         lyricsTrackNameEl.textContent = `${track.artists || ''} — ${track.title || ''}`.replace(/^\s*—\s*|\s*—\s*$/g, '');
@@ -1041,6 +1060,19 @@ if (lyricsCloseBtn) {
     lyricsCloseBtn.addEventListener('click', closeLyricsPanel);
 }
 
+if (lyricsPanel) {
+    lyricsPanel.addEventListener('click', (event) => {
+        if (event.target === lyricsPanel) closeLyricsPanel();
+    });
+}
+
+window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && lyricsPanel && !lyricsPanel.hidden) {
+        event.preventDefault();
+        closeLyricsPanel();
+    }
+});
+
 async function loadTrack(track, caller = 'unknown') {
     isReloading = true;
     logEvent('loadTrack:start', { caller, track: { id: track.id, title: track.title, artists: track.artists } });
@@ -1051,6 +1083,10 @@ async function loadTrack(track, caller = 'unknown') {
         updatePlaybackUI(false);
         updateCurrentTrackArtwork(track);
         resetLyricsForTrack(track);
+        if (seekBar) {
+            seekBar.style.setProperty('--progress', '0%');
+            seekBar.value = 0;
+        }
 
         statusEl.textContent = 'Загружаем трек...';
         trackTitleEl.textContent = `Загрузка: ${track.artists} — ${track.title}`;
@@ -1077,10 +1113,8 @@ async function loadTrack(track, caller = 'unknown') {
         trackTitleEl.textContent = `${track.artists} — ${track.title} • ${formatTime(audio.duration)}`;
 
         seekBar.max = audio.duration;
-        seekBar.value = 0;
         seekBar.disabled = !isHost;
-        timeCurrentEl.textContent = '0:00';
-        timeTotalEl.textContent = formatTime(audio.duration);
+        updateTrackProgressUI(0);
         seekRow.classList.add('visible');
         volumeRow.style.display = 'flex';
 
@@ -1292,8 +1326,7 @@ function startPositionTimer() {
     positionTimer = setInterval(() => {
         virtualPosition = audio.currentTime;
         if (!isSeeking) {
-            seekBar.value = audio.currentTime;
-            timeCurrentEl.textContent = formatTime(audio.currentTime);
+            updateTrackProgressUI(audio.currentTime);
         }
         updateKaraokeUI(audio.currentTime);
     }, 100);
@@ -1302,7 +1335,7 @@ function startPositionTimer() {
 function stopPositionTimer() {
     if (positionTimer) clearInterval(positionTimer);
     positionTimer = null;
-    timeCurrentEl.textContent = formatTime(audio.currentTime);
+    updateTrackProgressUI(audio.currentTime);
     updateKaraokeUI(audio.currentTime);
 }
 
@@ -1313,6 +1346,7 @@ audio.addEventListener('play', () => {
     logEvent('audio:play', { currentTime: audio.currentTime, state: snapshotState() });
 });
 audio.addEventListener('timeupdate', () => {
+    if (!isSeeking) updateTrackProgressUI(audio.currentTime);
     updateKaraokeUI(audio.currentTime);
 });
 audio.addEventListener('pause', () => {
@@ -1517,7 +1551,7 @@ modeTracksBtn.addEventListener('click', () => {
 seekBar.addEventListener('input', () => {
     if (!isHost) return;
     isSeeking = true;
-    timeCurrentEl.textContent = formatTime(parseFloat(seekBar.value));
+    updateTrackProgressUI(parseFloat(seekBar.value));
 });
 
 seekBar.addEventListener('change', () => {
@@ -1525,6 +1559,7 @@ seekBar.addEventListener('change', () => {
     const newPos = parseFloat(seekBar.value);
     logEvent('ui:seek', { newPos });
     isSeeking = false;
+    updateTrackProgressUI(newPos);
     sendCommand('seek', newPos, 'seek-bar');
 });
 
