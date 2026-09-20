@@ -24,6 +24,8 @@ const volumeBar = document.getElementById('volumeBar');
 const volumeLabel = document.getElementById('volumeLabel');
 const muteBtn = document.getElementById('muteBtn');
 const waveBtn = document.getElementById('waveBtn');
+const queuePanel = document.getElementById('queuePanel');
+const queueList = document.getElementById('queueList');
 
 const audio = new Audio();
 audio.crossOrigin = 'anonymous';
@@ -46,18 +48,16 @@ let virtualPosition = 0;
 let isPlaying = false;
 let positionTimer = null;
 
-// --- Плейлист / очередь ---
-let playlist = [];          // массив треков
-let playlistIndex = -1;     // индекс текущего
-let playlistMode = null;    // 'search' | 'wave' | null
-let waveSessionId = null;   // для догрузки Волны
-let isLoadingNext = false;  // защита от двойного вызова
+let playlist = [];
+let playlistIndex = -1;
+let playlistMode = null;
+let waveSessionId = null;
+let isLoadingNext = false;
 
 const rtcConfig = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 };
 
-// --- Утилиты ---
 function formatTime(sec) {
   if (!isFinite(sec) || sec < 0) sec = 0;
   const m = Math.floor(sec / 60);
@@ -68,13 +68,76 @@ function formatTime(sec) {
 function updateQueueLabel() {
   if (playlist.length === 0 || playlistIndex < 0) {
     trackQueueEl.textContent = '';
+    queuePanel.classList.remove('visible');
     return;
   }
   const mode = playlistMode === 'wave' ? '📻 ' : '';
   trackQueueEl.textContent = `${mode}${playlistIndex + 1} / ${playlist.length}`;
+  queuePanel.classList.add('visible');
+  renderQueue();
 }
 
-// --- Signaling ---
+function renderQueue() {
+  if (playlist.length === 0) {
+    queueList.innerHTML = '<div class="queueEmpty">Пусто</div>';
+    return;
+  }
+
+  queueList.innerHTML = '';
+  playlist.forEach((t, idx) => {
+    const item = document.createElement('div');
+    item.className = 'queueItem' + (idx === playlistIndex ? ' current' : '');
+    item.dataset.index = idx;
+
+    const cover = document.createElement('img');
+    cover.className = 'queueCover';
+    if (t.cover) cover.src = t.cover;
+    item.appendChild(cover);
+
+    const info = document.createElement('div');
+    info.className = 'queueInfo';
+
+    const title = document.createElement('div');
+    title.className = 'queueTitle';
+    title.textContent = t.title + (t.version ? ` (${t.version})` : '');
+
+    const artist = document.createElement('div');
+    artist.className = 'queueArtist';
+    artist.textContent = t.artists;
+
+    info.appendChild(title);
+    info.appendChild(artist);
+    item.appendChild(info);
+
+    const idxEl = document.createElement('div');
+    idxEl.className = 'queueIndex';
+    idxEl.textContent = idx + 1;
+    item.appendChild(idxEl);
+
+    item.addEventListener('click', () => jumpToTrack(idx));
+    queueList.appendChild(item);
+  });
+
+  requestAnimationFrame(() => {
+    const current = queueList.querySelector('.queueItem.current');
+    if (current) current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  });
+}
+
+async function jumpToTrack(index) {
+  if (!isHost) {
+    statusEl.textContent = 'Менять трек может только хост';
+    return;
+  }
+  if (index < 0 || index >= playlist.length) return;
+  if (index === playlistIndex && audioReady) {
+    sendCommand('seek', 0);
+    return;
+  }
+  playlistIndex = index;
+  await playCurrent();
+}
+
 ws = new WebSocket(SIGNALING_URL);
 
 ws.onopen = () => {
@@ -153,7 +216,6 @@ function setupDataChannel() {
   };
 }
 
-// --- Поиск ---
 async function doSearch() {
   const query = searchInput.value.trim();
   if (!query) return;
@@ -208,7 +270,6 @@ function renderResults(tracks) {
 }
 
 async function pickTrackFromSearch(results, index) {
-  // Плейлист = результаты поиска, режим = search
   playlist = results.slice();
   playlistIndex = index;
   playlistMode = 'search';
@@ -219,7 +280,6 @@ async function pickTrackFromSearch(results, index) {
   await playCurrent();
 }
 
-// --- Яндекс Волна ---
 async function startWave() {
   try {
     statusEl.textContent = '📻 Запускаем Волну...';
@@ -269,7 +329,6 @@ async function fetchMoreWave() {
   }
 }
 
-// --- Управление воспроизведением ---
 async function playCurrent() {
   const track = playlist[playlistIndex];
   if (!track) return;
@@ -281,7 +340,6 @@ async function playCurrent() {
   await loadTrack(track);
   updateQueueLabel();
 
-  // Автоматически запускаем (для Волны и поиска — одинаково)
   if (isHost && dataChannel && dataChannel.readyState === 'open') {
     setTimeout(() => sendCommand('play', 0), 400);
   }
@@ -297,7 +355,6 @@ async function nextTrack() {
     return;
   }
 
-  // Конец плейлиста
   if (playlistMode === 'wave') {
     const ok = await fetchMoreWave();
     if (ok && playlistIndex + 1 < playlist.length) {
@@ -313,7 +370,6 @@ async function prevTrack() {
   if (!isHost) return;
   if (playlist.length === 0) return;
   if (playlistIndex - 1 < 0) {
-    // уже в начале — просто перезапустим текущий с нуля
     sendCommand('seek', 0);
     return;
   }
@@ -321,7 +377,6 @@ async function prevTrack() {
   await playCurrent();
 }
 
-// --- Загрузка трека ---
 async function loadTrack(track) {
   try {
     audioReady = false;
@@ -368,7 +423,6 @@ async function loadTrack(track) {
   }
 }
 
-// --- Сообщения ---
 function handleMessage(msg) {
   if (msg.type === 'ping') {
     const t1 = Date.now();
@@ -393,7 +447,6 @@ function handleMessage(msg) {
 
   if (msg.type === 'load') {
     console.log('Получена команда load:', msg.track);
-    // Партнёр просто грузит, play придёт отдельной командой
     loadTrack(msg.track);
     return;
   }
@@ -417,7 +470,6 @@ function finishClockSync() {
   statusEl.textContent = `Синхронизация: RTT ${avgRtt.toFixed(0)}мс`;
 }
 
-// --- Команды ---
 function sendCommand(action, extraPosition) {
   if (!audioReady) {
     statusEl.textContent = 'Сначала выбери трек';
@@ -472,7 +524,6 @@ function stopPositionTimer() {
   timeCurrentEl.textContent = formatTime(audio.currentTime);
 }
 
-// --- Автопереход по окончании трека ---
 audio.addEventListener('ended', () => {
   if (isHost) {
     console.log('Трек закончился → следующий');
@@ -480,7 +531,6 @@ audio.addEventListener('ended', () => {
   }
 });
 
-// --- Громкость ---
 let lastVolume = 1;
 
 function updateVolumeUI() {
@@ -514,7 +564,6 @@ muteBtn.addEventListener('click', () => {
 
 updateVolumeUI();
 
-// --- UI ---
 searchBtn.addEventListener('click', doSearch);
 searchInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') doSearch();
@@ -538,7 +587,6 @@ pauseBtn.addEventListener('click', () => sendCommand('pause'));
 prevBtn.addEventListener('click', prevTrack);
 nextBtn.addEventListener('click', nextTrack);
 
-// Горячие клавиши: ← / → для переключения треков
 window.addEventListener('keydown', (e) => {
   const inInput = e.target.tagName === 'INPUT';
   if (e.code === 'Space' && audioReady && !inInput) {

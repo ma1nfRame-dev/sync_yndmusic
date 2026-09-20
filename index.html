@@ -233,42 +233,162 @@
             text-align: right;
             color: #666;
         }
+        /* Layout */
+        #layout {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+        }
+
+        #mainColumn {
+            flex: 1;
+            min-width: 0;
+        }
+
+        /* Панель очереди */
+        #queuePanel {
+            display: none;
+            width: 300px;
+            flex-shrink: 0;
+            background: #fafafa;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+            #queuePanel.visible {
+                display: block;
+            }
+
+        #queueHeader {
+            padding: 10px 14px;
+            font-weight: 600;
+            font-size: 0.9em;
+            color: #333;
+            background: #f0f0f0;
+            border-bottom: 1px solid #e0e0e0;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        #queueList {
+            max-height: 70vh;
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+
+        .queueItem {
+            display: flex;
+            gap: 10px;
+            padding: 8px 12px;
+            cursor: pointer;
+            border-left: 3px solid transparent;
+            transition: background 0.12s;
+            align-items: center;
+        }
+
+            .queueItem:hover {
+                background: #f0f4f8;
+            }
+
+            .queueItem.current {
+                background: #e8f0fe;
+                border-left-color: #1e88e5;
+            }
+
+                .queueItem.current .queueTitle {
+                    color: #1e88e5;
+                    font-weight: 700;
+                }
+
+        .queueCover {
+            width: 40px;
+            height: 40px;
+            border-radius: 4px;
+            background: #eee;
+            flex-shrink: 0;
+            object-fit: cover;
+        }
+
+        .queueInfo {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .queueTitle {
+            font-size: 0.9em;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .queueArtist {
+            font-size: 0.78em;
+            color: #777;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-top: 2px;
+        }
+
+        .queueIndex {
+            font-family: monospace;
+            font-size: 0.8em;
+            color: #999;
+            flex-shrink: 0;
+        }
+
+        .queueEmpty {
+            padding: 16px;
+            text-align: center;
+            color: #999;
+            font-size: 0.9em;
+        }
     </style>
 </head>
 <body>
-    <h1>Sync Player</h1>
-    <p id="status">Ожидание подключения...</p>
-    <div id="trackInfo">
-        <div id="trackTitle">Трек не загружен</div>
-        <div id="trackQueue" style="font-size:0.85em; color:#666; font-family:monospace; margin-top:4px;"></div>
-    </div>
+    <div id="layout">
+        <div id="mainColumn">
+            <h1>Sync Player</h1>
+            <p id="status">Ожидание подключения...</p>
 
-    <!-- Прогресс-бар -->
-    <div id="seekRow">
-        <span id="timeCurrent">0:00</span>
-        <input type="range" id="seekBar" min="0" max="1" step="0.01" value="0" disabled />
-        <span id="timeTotal">0:00</span>
-    </div>
+            <div id="trackInfo">
+                <div id="trackTitle">Трек не загружен</div>
+                <div id="trackQueue" style="font-size:0.85em; color:#666; font-family:monospace; margin-top:4px;"></div>
+            </div>
 
-    <!-- Громкость -->
-    <div id="volumeRow">
-        <button id="muteBtn" title="Mute">🔊</button>
-        <input type="range" id="volumeBar" min="0" max="1" step="0.01" value="1" />
-        <span id="volumeLabel">100%</span>
-    </div>
+            <div id="seekRow">
+                <span id="timeCurrent">0:00</span>
+                <input type="range" id="seekBar" min="0" max="1" step="0.01" value="0" disabled />
+                <span id="timeTotal">0:00</span>
+            </div>
 
-    <div class="controls" id="searchRow">
-        <input id="searchInput" type="text" placeholder="Название трека или исполнитель..." />
-        <button id="searchBtn">Найти</button>
-        <button id="waveBtn" title="Запустить Яндекс Волну">🌊 Волна</button>
-    </div>
-    <div id="searchResults"></div>
+            <div id="volumeRow" style="display:none;">
+                <button id="muteBtn" title="Mute">🔊</button>
+                <input type="range" id="volumeBar" min="0" max="1" step="0.01" value="1" />
+                <span id="volumeLabel">100%</span>
+            </div>
 
-    <div class="controls" id="playRow">
-        <button id="prevBtn" title="Предыдущий (←)">⏮</button>
-        <button id="playBtn">Play</button>
-        <button id="pauseBtn">Pause</button>
-        <button id="nextBtn" title="Следующий (→)">⏭</button>
+            <div class="controls" id="searchRow">
+                <input id="searchInput" type="text" placeholder="Название трека или исполнитель..." />
+                <button id="searchBtn">Найти</button>
+                <button id="waveBtn" title="Запустить Яндекс Волну">🌊 Волна</button>
+            </div>
+            <div id="searchResults"></div>
+
+            <div class="controls" id="playRow">
+                <button id="prevBtn" title="Предыдущий (←)">⏮</button>
+                <button id="playBtn">▶</button>
+                <button id="pauseBtn">⏸</button>
+                <button id="nextBtn" title="Следующий (→)">⏭</button>
+            </div>
+        </div>
+
+        <div id="queuePanel">
+            <div id="queueHeader">Очередь</div>
+            <div id="queueList"></div>
+        </div>
     </div>
 
     <script src="renderer.js"></script>
