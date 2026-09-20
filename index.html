@@ -8,6 +8,22 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <!-- Custom Electron titlebar: requires frame:false in BrowserWindow -->
+    <header id="titlebar">
+        <div id="titlebarDragArea">
+            <div id="titlebarBrand">
+                <span id="titlebarAppIcon">▶</span>
+                <span id="titlebarTitle">Sync Player</span>
+            </div>
+        </div>
+
+        <div id="windowControls" aria-label="Управление окном">
+            <button id="windowMinimizeBtn" class="windowControl" title="Свернуть">−</button>
+            <button id="windowMaximizeBtn" class="windowControl" title="Развернуть">□</button>
+            <button id="windowCloseBtn" class="windowControl windowClose" title="Закрыть">×</button>
+        </div>
+    </header>
+
     <div id="dynamicBackdrop" aria-hidden="true">
         <img id="backdropA" alt="">
         <img id="backdropB" alt="">

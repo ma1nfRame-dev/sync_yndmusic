@@ -55,6 +55,12 @@ const modeTracksBtn = document.getElementById('modeTracksBtn');
 
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsModal = document.getElementById('settingsModal');
+
+// --- Custom window controls ---
+const windowMinimizeBtn = document.getElementById('windowMinimizeBtn');
+const windowMaximizeBtn = document.getElementById('windowMaximizeBtn');
+const windowCloseBtn = document.getElementById('windowCloseBtn');
+const titlebarDragArea = document.getElementById('titlebarDragArea');
 const ymTokenInput = document.getElementById('ymTokenInput');
 const ymUidInput = document.getElementById('ymUidInput');
 const signalingUrlInput = document.getElementById('signalingUrlInput');
@@ -152,6 +158,45 @@ function updateSearchModeUI() {
         modeTracksBtn.classList.add('active');
         modeArtistBtn.classList.remove('active');
     }
+}
+
+function setMaximizeButtonState(isMaximized) {
+    if (!windowMaximizeBtn) return;
+    windowMaximizeBtn.textContent = isMaximized ? '❐' : '□';
+    windowMaximizeBtn.title = isMaximized ? 'Восстановить' : 'Развернуть';
+    windowMaximizeBtn.setAttribute('aria-label', isMaximized ? 'Восстановить размер' : 'Развернуть окно');
+}
+
+async function toggleMaximizeWindow() {
+    try {
+        const isMaximized = await ipcRenderer.invoke('window-toggle-maximize');
+        setMaximizeButtonState(Boolean(isMaximized));
+    } catch (err) {
+        logEvent('window:maximize:error', { error: err.message });
+    }
+}
+
+if (windowMinimizeBtn) {
+    windowMinimizeBtn.addEventListener('click', () => {
+        ipcRenderer.send('window-minimize');
+    });
+}
+
+if (windowMaximizeBtn) {
+    windowMaximizeBtn.addEventListener('click', toggleMaximizeWindow);
+}
+
+if (windowCloseBtn) {
+    windowCloseBtn.addEventListener('click', () => {
+        ipcRenderer.send('window-close');
+    });
+}
+
+if (titlebarDragArea) {
+    titlebarDragArea.addEventListener('dblclick', (event) => {
+        if (event.target.closest('button, input, a, select, textarea')) return;
+        toggleMaximizeWindow();
+    });
 }
 
 
@@ -1121,5 +1166,11 @@ if (oauthLoginBtn) {
     updateSearchModeUI();
     updatePlaybackUI(false);
     updateUIForRole();
+    try {
+        const isMaximized = await ipcRenderer.invoke('window-is-maximized');
+        setMaximizeButtonState(Boolean(isMaximized));
+    } catch (err) {
+        logEvent('window:state:error', { error: err.message });
+    }
     initWebSocket();
 })();
