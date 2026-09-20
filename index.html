@@ -1,571 +1,39 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#090d14">
     <title>Sync Player</title>
-    <style>
-        body {
-            font-family: system-ui, sans-serif;
-            padding: 20px;
-            max-width: 1100px;
-            margin: 0 auto;
-        }
-
-        #trackInfo {
-            font-size: 1.05em;
-            margin: 10px 0;
-            padding: 10px;
-            background: #f0f0f0;
-            border-radius: 6px;
-            min-height: 1.4em;
-        }
-
-        .controls {
-            margin: 15px 0;
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            align-items: center;
-        }
-
-            .controls input[type="text"] {
-                flex: 1;
-                min-width: 300px;
-                padding: 8px;
-                font-size: 14px;
-            }
-
-            .controls button {
-                padding: 8px 16px;
-                font-size: 14px;
-                cursor: pointer;
-            }
-
-        #status {
-            color: #666;
-            font-size: 0.9em;
-        }
-
-        #searchRow {
-            display: none;
-        }
-
-            #searchRow.visible {
-                display: flex;
-            }
-
-        #playRow {
-            display: none;
-        }
-
-            #playRow.visible {
-                display: flex;
-            }
-
-        /* Тумблер режима поиска */
-        #searchModeToggle {
-            display: inline-flex;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            overflow: hidden;
-            background: #fff;
-            height: 36px;
-            flex-shrink: 0;
-        }
-
-            #searchModeToggle button {
-                padding: 0 14px;
-                font-size: 13px;
-                cursor: pointer;
-                background: #fff;
-                border: none;
-                color: #666;
-                transition: background 0.15s, color 0.15s;
-                white-space: nowrap;
-            }
-
-                #searchModeToggle button:hover {
-                    background: #f5f5f5;
-                }
-
-                #searchModeToggle button.active {
-                    background: #1e88e5;
-                    color: #fff;
-                    font-weight: 600;
-                }
-
-                #searchModeToggle button + button {
-                    border-left: 1px solid #ddd;
-                }
-
-        #transferHostBtn {
-            display: none;
-            margin: 0 0 12px 0;
-            padding: 8px 16px;
-            font-size: 13px;
-            cursor: pointer;
-            background: #fff8e1;
-            border: 1px solid #ffd54f;
-            border-radius: 6px;
-            font-weight: 600;
-        }
-
-            #transferHostBtn:hover {
-                background: #ffecb3;
-            }
-
-        #hostBadge {
-            font-size: 14px;
-            font-weight: normal;
-            margin-left: 8px;
-            color: #888;
-        }
-
-        /* Прогресс-бар */
-        #seekRow {
-            display: none;
-            align-items: center;
-            gap: 12px;
-            margin: 15px 0;
-            font-family: monospace;
-            font-size: 0.95em;
-        }
-
-            #seekRow.visible {
-                display: flex;
-            }
-
-        #seekBar {
-            flex: 1;
-            -webkit-appearance: none;
-            appearance: none;
-            height: 6px;
-            background: #ddd;
-            border-radius: 3px;
-            outline: none;
-            cursor: pointer;
-        }
-
-            #seekBar::-webkit-slider-thumb {
-                -webkit-appearance: none;
-                width: 16px;
-                height: 16px;
-                border-radius: 50%;
-                background: #1e88e5;
-                cursor: pointer;
-                transition: transform 0.1s;
-            }
-
-                #seekBar::-webkit-slider-thumb:hover {
-                    transform: scale(1.2);
-                }
-
-            #seekBar:disabled {
-                cursor: not-allowed;
-                opacity: 0.5;
-            }
-
-                #seekBar:disabled::-webkit-slider-thumb {
-                    background: #999;
-                    cursor: not-allowed;
-                }
-
-        /* Результаты поиска */
-        #searchResults {
-            display: none;
-            max-height: 360px;
-            overflow-y: auto;
-            margin: 10px 0;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            background: #fff;
-        }
-
-            #searchResults.visible {
-                display: block;
-            }
-
-        .searchItem {
-            display: flex;
-            gap: 12px;
-            padding: 8px 10px;
-            cursor: pointer;
-            border-bottom: 1px solid #eee;
-            align-items: center;
-        }
-
-            .searchItem:last-child {
-                border-bottom: none;
-            }
-
-            .searchItem:hover {
-                background: #f5f7fa;
-            }
-
-            .searchItem img {
-                width: 48px;
-                height: 48px;
-                border-radius: 4px;
-                object-fit: cover;
-                flex-shrink: 0;
-                background: #eee;
-            }
-
-            .searchItem .info {
-                flex: 1;
-                min-width: 0;
-            }
-
-            .searchItem .title {
-                font-weight: 600;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-
-            .searchItem .subtitle {
-                font-size: 0.85em;
-                color: #666;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
-
-            .searchItem .duration {
-                font-family: monospace;
-                color: #666;
-                font-size: 0.85em;
-            }
-
-        .searchHint {
-            padding: 12px;
-            color: #888;
-            text-align: center;
-            font-size: 0.9em;
-        }
-
-        /* Громкость */
-        #volumeRow {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin: 10px 0 15px 0;
-            font-family: monospace;
-            font-size: 0.9em;
-        }
-
-            #volumeRow button {
-                background: none;
-                border: none;
-                font-size: 20px;
-                cursor: pointer;
-                padding: 4px;
-                width: 36px;
-                height: 36px;
-                border-radius: 50%;
-                transition: background 0.15s;
-            }
-
-                #volumeRow button:hover {
-                    background: #eee;
-                }
-
-        #volumeBar {
-            flex: 1;
-            -webkit-appearance: none;
-            appearance: none;
-            height: 5px;
-            background: #ddd;
-            border-radius: 3px;
-            outline: none;
-            cursor: pointer;
-        }
-
-            #volumeBar::-webkit-slider-thumb {
-                -webkit-appearance: none;
-                width: 14px;
-                height: 14px;
-                border-radius: 50%;
-                background: #333;
-                cursor: pointer;
-                transition: transform 0.1s;
-            }
-
-                #volumeBar::-webkit-slider-thumb:hover {
-                    transform: scale(1.2);
-                }
-
-        #volumeLabel {
-            min-width: 45px;
-            text-align: right;
-            color: #666;
-        }
-
-        /* Layout */
-        #layout {
-            display: flex;
-            gap: 20px;
-            align-items: flex-start;
-        }
-
-        #mainColumn {
-            flex: 1;
-            min-width: 0;
-        }
-
-        /* Панель очереди */
-        #queuePanel {
-            display: none;
-            width: 300px;
-            flex-shrink: 0;
-            background: #fafafa;
-            border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            overflow: hidden;
-        }
-
-            #queuePanel.visible {
-                display: block;
-            }
-
-        #queueHeader {
-            padding: 10px 14px;
-            font-weight: 600;
-            font-size: 0.9em;
-            color: #333;
-            background: #f0f0f0;
-            border-bottom: 1px solid #e0e0e0;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        #queueList {
-            max-height: 70vh;
-            overflow-y: auto;
-            scroll-behavior: smooth;
-        }
-
-        .queueItem {
-            display: flex;
-            gap: 10px;
-            padding: 8px 12px;
-            cursor: pointer;
-            border-left: 3px solid transparent;
-            transition: background 0.12s;
-            align-items: center;
-        }
-
-            .queueItem:hover {
-                background: #f0f4f8;
-            }
-
-            .queueItem.current {
-                background: #e8f0fe;
-                border-left-color: #1e88e5;
-            }
-
-                .queueItem.current .queueTitle {
-                    color: #1e88e5;
-                    font-weight: 700;
-                }
-
-        #queuePanel.readonly .queueItem {
-            cursor: default;
-        }
-
-            #queuePanel.readonly .queueItem:hover {
-                background: inherit;
-            }
-
-        .queueCover {
-            width: 40px;
-            height: 40px;
-            border-radius: 4px;
-            background: #eee;
-            flex-shrink: 0;
-            object-fit: cover;
-        }
-
-        .queueInfo {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .queueTitle {
-            font-size: 0.9em;
-            font-weight: 600;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .queueArtist {
-            font-size: 0.78em;
-            color: #777;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            margin-top: 2px;
-        }
-
-        .queueIndex {
-            font-family: monospace;
-            font-size: 0.8em;
-            color: #999;
-            flex-shrink: 0;
-        }
-
-        .queueEmpty {
-            padding: 16px;
-            text-align: center;
-            color: #999;
-            font-size: 0.9em;
-        }
-
-        /* Кнопки настроек и логов */
-        #settingsBtn, #logBtn {
-            position: fixed;
-            top: 15px;
-            background: #fff;
-            border: 1px solid #ddd;
-            cursor: pointer;
-            z-index: 10;
-            width: 42px;
-            height: 42px;
-            border-radius: 50%;
-            transition: background 0.15s, transform 0.15s;
-        }
-
-        #settingsBtn {
-            right: 15px;
-            font-size: 20px;
-        }
-
-            #settingsBtn:hover {
-                background: #f0f0f0;
-                transform: rotate(45deg);
-            }
-
-        #logBtn {
-            right: 65px;
-            font-size: 18px;
-        }
-
-            #logBtn:hover {
-                background: #f0f0f0;
-            }
-
-        /* Модальное окно настроек */
-        #settingsModal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 100;
-            align-items: center;
-            justify-content: center;
-        }
-
-            #settingsModal.visible {
-                display: flex;
-            }
-
-            #settingsModal .modal {
-                background: #fff;
-                border-radius: 12px;
-                padding: 24px;
-                width: 480px;
-                max-width: 90vw;
-                max-height: 90vh;
-                overflow-y: auto;
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-            }
-
-            #settingsModal h2 {
-                margin-top: 0;
-                margin-bottom: 20px;
-            }
-
-        .field {
-            margin-bottom: 16px;
-        }
-
-            .field label {
-                display: block;
-                font-weight: 600;
-                margin-bottom: 6px;
-                font-size: 0.9em;
-            }
-
-            .field input {
-                width: 100%;
-                padding: 10px;
-                border: 1px solid #ddd;
-                border-radius: 6px;
-                box-sizing: border-box;
-                font-family: monospace;
-                font-size: 13px;
-            }
-
-            .field .hint {
-                font-size: 0.78em;
-                color: #888;
-                margin-top: 4px;
-            }
-
-        .modal-actions {
-            display: flex;
-            gap: 10px;
-            justify-content: flex-end;
-            margin-top: 24px;
-        }
-
-            .modal-actions button {
-                padding: 10px 20px;
-                border-radius: 6px;
-                cursor: pointer;
-                font-size: 14px;
-            }
-
-        #settingsCancelBtn {
-            border: 1px solid #ddd;
-            background: #fff;
-        }
-
-        #settingsSaveBtn {
-            border: none;
-            background: #1e88e5;
-            color: #fff;
-        }
-
-            #settingsSaveBtn:hover {
-                background: #1976d2;
-            }
-
-        #oauthLoginBtn {
-            width: 100%;
-            padding: 10px;
-            margin-bottom: 16px;
-            background: #fc3f1d;
-            color: #fff;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-        }
-
-            #oauthLoginBtn:hover {
-                background: #e0361a;
-            }
-    </style>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <button id="settingsBtn" title="Настройки">⚙️</button>
-    <button id="logBtn" title="Открыть папку с логами">📝</button>
+    <!-- Custom Electron titlebar: requires frame:false in BrowserWindow -->
+    <header id="titlebar">
+        <div id="titlebarDragArea">
+            <div id="titlebarBrand">
+                <span id="titlebarAppIcon">▶</span>
+                <span id="titlebarTitle">Sync Player</span>
+            </div>
+        </div>
+
+        <div id="windowControls" aria-label="Управление окном">
+            <button id="windowMinimizeBtn" class="windowControl" title="Свернуть">−</button>
+            <button id="windowMaximizeBtn" class="windowControl" title="Развернуть">□</button>
+            <button id="windowCloseBtn" class="windowControl windowClose" title="Закрыть">×</button>
+        </div>
+    </header>
+
+    <div id="dynamicBackdrop" aria-hidden="true">
+        <img id="backdropA" alt="">
+        <img id="backdropB" alt="">
+        <div id="dynamicBackdropGlow"></div>
+    </div>
+
+    <div id="utilityDock" aria-label="Служебные действия">
+        <button id="logBtn" title="Открыть папку с логами" aria-label="Открыть папку с логами">📝</button>
+        <button id="settingsBtn" title="Настройки" aria-label="Настройки">⚙️</button>
+    </div>
 
     <div id="layout">
         <div id="mainColumn">
@@ -575,14 +43,23 @@
             <button id="transferHostBtn" title="Сделать партнёра хостом">👑 Передать хост</button>
 
             <div id="trackInfo">
-                <div id="trackTitle">Трек не загружен</div>
-                <div id="trackQueue" style="font-size:0.85em; color:#667; font-family:monospace; margin-top:4px;"></div>
-            </div>
+                <div id="trackMainRow">
+                    <div id="trackArtworkWrap">
+                        <img id="trackArtwork" alt="Обложка текущего трека" />
+                    </div>
+                    <div id="trackText">
+                        <div id="trackTitle">Трек не загружен</div>
+                        <div id="trackQueue"></div>
+                    </div>
+                </div>
 
-            <div id="seekRow">
-                <span id="timeCurrent">0:00</span>
-                <input type="range" id="seekBar" min="0" max="1" step="0.01" value="0" disabled />
-                <span id="timeTotal">0:00</span>
+                <div id="seekRow">
+                    <div id="trackProgressTimes">
+                        <span id="timeCurrent">0:00</span>
+                        <span id="timeTotal">0:00</span>
+                    </div>
+                    <input type="range" id="seekBar" min="0" max="1" step="0.01" value="0" disabled />
+                </div>
             </div>
 
             <div id="volumeRow" style="display:none;">
@@ -599,14 +76,19 @@
                 <input id="searchInput" type="text" placeholder="Название трека или исполнитель..." />
                 <button id="searchBtn">Найти</button>
                 <button id="waveBtn" title="Запустить Яндекс Волну">🌊 Волна</button>
+                <button id="likedBtn" title="Мои лайки из Яндекс.Музыки (Shift+клик — обновить)">❤️ Избранное</button>
             </div>
             <div id="searchResults"></div>
 
             <div class="controls" id="playRow">
-                <button id="prevBtn" title="Предыдущий (←)">⏮</button>
-                <button id="playBtn">▶</button>
-                <button id="pauseBtn">⏸</button>
-                <button id="nextBtn" title="Следующий (→)">⏭</button>
+                <button id="prevBtn" title="Предыдущий (←)" aria-label="Предыдущий">⏮</button>
+                <button id="playBtn" aria-pressed="false" title="Воспроизвести" aria-label="Воспроизвести">▶</button>
+                <button id="pauseBtn" aria-pressed="false" title="Пауза" aria-label="Пауза">⏸</button>
+                <button id="nextBtn" title="Следующий (→)" aria-label="Следующий">⏭</button>
+                <button id="lyricsBtn" class="lyricsAction" title="Открыть текст" aria-label="Открыть текст">
+                    <span class="lyricsActionIcon" aria-hidden="true">Aa</span>
+                    <span class="lyricsActionText">Текст</span>
+                </button>
             </div>
         </div>
 
@@ -615,6 +97,25 @@
             <div id="queueList"></div>
         </div>
     </div>
+
+    <!-- Караоке-поверхность внутри этого же окна -->
+    <section id="lyricsPanel" hidden aria-live="polite">
+        <div id="lyricsModal" role="dialog" aria-modal="true" aria-labelledby="lyricsTrackName">
+            <div id="lyricsHeader">
+                <div id="lyricsHeading">
+                    <span id="lyricsEyebrow">КАРАОКЕ</span>
+                    <span id="lyricsTrackName">—</span>
+                </div>
+                <button id="lyricsCloseBtn" type="button" title="Закрыть текст" aria-label="Закрыть текст">×</button>
+            </div>
+
+            <div id="lyricsState" class="lyricsState">
+                Нажми «Текст», чтобы открыть караоке.
+            </div>
+
+            <div id="lyricsContent" class="lyricsContent karaokeLyrics" role="listbox" aria-label="Текст песни"></div>
+        </div>
+    </section>
 
     <div id="settingsModal">
         <div class="modal">
