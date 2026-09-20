@@ -238,7 +238,10 @@
 <body>
     <h1>Sync Player</h1>
     <p id="status">Ожидание подключения...</p>
-    <div id="trackInfo">Трек не загружен</div>
+    <div id="trackInfo">
+        <div id="trackTitle">Трек не загружен</div>
+        <div id="trackQueue" style="font-size:0.85em; color:#666; font-family:monospace; margin-top:4px;"></div>
+    </div>
 
     <!-- Прогресс-бар -->
     <div id="seekRow">
@@ -262,8 +265,10 @@
     <div id="searchResults"></div>
 
     <div class="controls" id="playRow">
+        <button id="prevBtn" title="Предыдущий (←)">⏮</button>
         <button id="playBtn">Play</button>
         <button id="pauseBtn">Pause</button>
+        <button id="nextBtn" title="Следующий (→)">⏭</button>
     </div>
 
     <script src="renderer.js"></script>

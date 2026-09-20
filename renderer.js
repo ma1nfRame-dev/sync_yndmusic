@@ -4,7 +4,8 @@ const ROOM = 'test-room-1';
 const SIGNALING_URL = 'ws://localhost:8080';
 
 const statusEl = document.getElementById('status');
-const trackInfoEl = document.getElementById('trackInfo');
+const trackTitleEl = document.getElementById('trackTitle');
+const trackQueueEl = document.getElementById('trackQueue');
 const seekRow = document.getElementById('seekRow');
 const seekBar = document.getElementById('seekBar');
 const timeCurrentEl = document.getElementById('timeCurrent');
@@ -16,6 +17,8 @@ const searchResultsEl = document.getElementById('searchResults');
 const playRow = document.getElementById('playRow');
 const playBtn = document.getElementById('playBtn');
 const pauseBtn = document.getElementById('pauseBtn');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
 const volumeRow = document.getElementById('volumeRow');
 const volumeBar = document.getElementById('volumeBar');
 const volumeLabel = document.getElementById('volumeLabel');
@@ -43,10 +46,12 @@ let virtualPosition = 0;
 let isPlaying = false;
 let positionTimer = null;
 
-// --- Состояние Волны ---
-let waveActive = false;
-let waveSessionId = null;
-let waveQueue = [];
+// --- Плейлист / очередь ---
+let playlist = [];          // массив треков
+let playlistIndex = -1;     // индекс текущего
+let playlistMode = null;    // 'search' | 'wave' | null
+let waveSessionId = null;   // для догрузки Волны
+let isLoadingNext = false;  // защита от двойного вызова
 
 const rtcConfig = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -58,6 +63,15 @@ function formatTime(sec) {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function updateQueueLabel() {
+  if (playlist.length === 0 || playlistIndex < 0) {
+    trackQueueEl.textContent = '';
+    return;
+  }
+  const mode = playlistMode === 'wave' ? '📻 ' : '';
+  trackQueueEl.textContent = `${mode}${playlistIndex + 1} / ${playlist.length}`;
 }
 
 // --- Signaling ---
@@ -163,7 +177,7 @@ function renderResults(tracks) {
   }
 
   searchResultsEl.innerHTML = '';
-  tracks.forEach(t => {
+  tracks.forEach((t, idx) => {
     const item = document.createElement('div');
     item.className = 'searchItem';
 
@@ -188,22 +202,21 @@ function renderResults(tracks) {
     dur.textContent = formatTime(t.durationMs / 1000);
     item.appendChild(dur);
 
-    item.addEventListener('click', () => pickTrack(t));
+    item.addEventListener('click', () => pickTrackFromSearch(tracks, idx));
     searchResultsEl.appendChild(item);
   });
 }
 
-function pickTrack(track) {
-  // Ручной выбор = выходим из режима Волны
-  waveActive = false;
-  waveQueue = [];
+async function pickTrackFromSearch(results, index) {
+  // Плейлист = результаты поиска, режим = search
+  playlist = results.slice();
+  playlistIndex = index;
+  playlistMode = 'search';
   waveSessionId = null;
+  updateQueueLabel();
 
-  if (dataChannel && dataChannel.readyState === 'open') {
-    dataChannel.send(JSON.stringify({ type: 'load', track }));
-  }
-  loadTrack(track, { autoPlay: false });
   searchResultsEl.classList.remove('visible');
+  await playCurrent();
 }
 
 // --- Яндекс Волна ---
@@ -218,56 +231,98 @@ async function startWave() {
       return;
     }
 
-    waveActive = true;
+    playlist = tracks.slice();
+    playlistIndex = 0;
+    playlistMode = 'wave';
     waveSessionId = sessionId;
-    waveQueue = tracks.slice(1); // первый играем сразу, остальные — в очередь
-    console.log(`📻 Волна запущена, в очереди ещё ${waveQueue.length}`);
+    updateQueueLabel();
 
-    await playWaveTrack(tracks[0]);
+    console.log(`📻 Волна запущена, треков: ${playlist.length}`);
+    await playCurrent();
   } catch (err) {
     console.error('Wave error:', err);
     statusEl.textContent = '📻 Ошибка Волны: ' + err.message;
   }
 }
 
-async function playWaveTrack(track) {
-  if (dataChannel && dataChannel.readyState === 'open') {
-    dataChannel.send(JSON.stringify({ type: 'load', track }));
-  }
-  await loadTrack(track, { autoPlay: true });
-}
-
-async function advanceWave() {
-  if (!waveActive || !isHost) return;
-
-  if (waveQueue.length > 0) {
-    const next = waveQueue.shift();
-    console.log(`📻 Волна → следующий трек (осталось в очереди: ${waveQueue.length})`);
-    await playWaveTrack(next);
-    return;
-  }
-
-  // Очередь пуста — запрашиваем новую порцию
+async function fetchMoreWave() {
+  if (isLoadingNext) return false;
+  if (playlistMode !== 'wave' || !waveSessionId) return false;
+  isLoadingNext = true;
   try {
     statusEl.textContent = '📻 Загружаем следующую порцию...';
     const more = await ipcRenderer.invoke('radio-next', waveSessionId);
     if (!more.length) {
       statusEl.textContent = '📻 Волна не вернула треков';
-      waveActive = false;
-      return;
+      return false;
     }
-    waveQueue = more.slice(1);
-    await playWaveTrack(more[0]);
+    playlist = playlist.concat(more);
+    updateQueueLabel();
+    console.log(`📻 Догружено ${more.length}, всего ${playlist.length}`);
+    return true;
   } catch (err) {
     console.error('Wave next error:', err);
-    statusEl.textContent = '📻 Ошибка Волны: ' + err.message;
-    waveActive = false;
+    statusEl.textContent = '📻 Ошибка: ' + err.message;
+    return false;
+  } finally {
+    isLoadingNext = false;
   }
 }
 
+// --- Управление воспроизведением ---
+async function playCurrent() {
+  const track = playlist[playlistIndex];
+  if (!track) return;
+
+  if (dataChannel && dataChannel.readyState === 'open') {
+    dataChannel.send(JSON.stringify({ type: 'load', track }));
+  }
+
+  await loadTrack(track);
+  updateQueueLabel();
+
+  // Автоматически запускаем (для Волны и поиска — одинаково)
+  if (isHost && dataChannel && dataChannel.readyState === 'open') {
+    setTimeout(() => sendCommand('play', 0), 400);
+  }
+}
+
+async function nextTrack() {
+  if (!isHost) return;
+  if (playlist.length === 0) return;
+
+  if (playlistIndex + 1 < playlist.length) {
+    playlistIndex++;
+    await playCurrent();
+    return;
+  }
+
+  // Конец плейлиста
+  if (playlistMode === 'wave') {
+    const ok = await fetchMoreWave();
+    if (ok && playlistIndex + 1 < playlist.length) {
+      playlistIndex++;
+      await playCurrent();
+    }
+  } else {
+    statusEl.textContent = 'Это последний трек в плейлисте';
+  }
+}
+
+async function prevTrack() {
+  if (!isHost) return;
+  if (playlist.length === 0) return;
+  if (playlistIndex - 1 < 0) {
+    // уже в начале — просто перезапустим текущий с нуля
+    sendCommand('seek', 0);
+    return;
+  }
+  playlistIndex--;
+  await playCurrent();
+}
+
 // --- Загрузка трека ---
-async function loadTrack(track, opts = {}) {
-  const { autoPlay = false } = opts;
+async function loadTrack(track) {
   try {
     audioReady = false;
     seekBar.disabled = true;
@@ -276,7 +331,7 @@ async function loadTrack(track, opts = {}) {
     audio.load();
 
     statusEl.textContent = 'Загружаем трек...';
-    trackInfoEl.textContent = `Загрузка: ${track.artists} — ${track.title}`;
+    trackTitleEl.textContent = `Загрузка: ${track.artists} — ${track.title}`;
 
     const directUrl = await ipcRenderer.invoke('get-audio-url', track.id);
     audio.src = directUrl;
@@ -294,7 +349,7 @@ async function loadTrack(track, opts = {}) {
     });
 
     audioReady = true;
-    trackInfoEl.textContent = `${track.artists} — ${track.title} • ${formatTime(audio.duration)}`;
+    trackTitleEl.textContent = `${track.artists} — ${track.title} • ${formatTime(audio.duration)}`;
 
     seekBar.max = audio.duration;
     seekBar.value = 0;
@@ -305,17 +360,11 @@ async function loadTrack(track, opts = {}) {
     volumeRow.style.display = 'flex';
 
     document.title = `${track.artists} — ${track.title} | Sync Player`;
-    statusEl.textContent = waveActive ? '📻 Волна играет' : 'Трек готов';
-
-    // Автовоспроизведение (используется Волной)
-    if (autoPlay && isHost && dataChannel && dataChannel.readyState === 'open') {
-      // дадим партнёру чуть-чуть времени загрузить трек
-      setTimeout(() => sendCommand('play', 0), 400);
-    }
+    statusEl.textContent = playlistMode === 'wave' ? '📻 Волна играет' : 'Трек готов';
   } catch (err) {
     console.error('Ошибка загрузки:', err);
     statusEl.textContent = 'Ошибка загрузки: ' + err.message;
-    trackInfoEl.textContent = 'Не удалось загрузить';
+    trackTitleEl.textContent = 'Не удалось загрузить';
   }
 }
 
@@ -344,8 +393,8 @@ function handleMessage(msg) {
 
   if (msg.type === 'load') {
     console.log('Получена команда load:', msg.track);
-    // Партнёр всегда грузит в обычном режиме, play придёт отдельной командой
-    loadTrack(msg.track, { autoPlay: false });
+    // Партнёр просто грузит, play придёт отдельной командой
+    loadTrack(msg.track);
     return;
   }
 }
@@ -423,11 +472,11 @@ function stopPositionTimer() {
   timeCurrentEl.textContent = formatTime(audio.currentTime);
 }
 
-// --- Автопереход по окончании трека (Волна) ---
+// --- Автопереход по окончании трека ---
 audio.addEventListener('ended', () => {
-  if (isHost && waveActive) {
-    console.log('📻 Трек закончился, переходим к следующему');
-    advanceWave();
+  if (isHost) {
+    console.log('Трек закончился → следующий');
+    nextTrack();
   }
 });
 
@@ -486,10 +535,20 @@ seekBar.addEventListener('change', () => {
 
 playBtn.addEventListener('click', () => sendCommand('play'));
 pauseBtn.addEventListener('click', () => sendCommand('pause'));
+prevBtn.addEventListener('click', prevTrack);
+nextBtn.addEventListener('click', nextTrack);
 
+// Горячие клавиши: ← / → для переключения треков
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' && audioReady && e.target.tagName !== 'INPUT') {
+  const inInput = e.target.tagName === 'INPUT';
+  if (e.code === 'Space' && audioReady && !inInput) {
     e.preventDefault();
     if (audio.paused) audio.play(); else audio.pause();
+  } else if (e.code === 'ArrowRight' && !inInput) {
+    e.preventDefault();
+    nextTrack();
+  } else if (e.code === 'ArrowLeft' && !inInput) {
+    e.preventDefault();
+    prevTrack();
   }
 });
