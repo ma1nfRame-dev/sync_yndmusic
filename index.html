@@ -3,13 +3,85 @@
 <head>
     <meta charset="UTF-8">
     <title>Sync Player</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            padding: 20px;
+            max-width: 700px;
+            margin: 0 auto;
+        }
+
+        #trackInfo {
+            font-size: 1.1em;
+            margin: 10px 0;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 6px;
+            min-height: 1.4em;
+        }
+
+        .controls {
+            margin: 15px 0;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+            .controls input {
+                flex: 1;
+                min-width: 300px;
+                padding: 8px;
+                font-size: 14px;
+            }
+
+            .controls button {
+                padding: 8px 16px;
+                font-size: 14px;
+                cursor: pointer;
+            }
+
+        #loadRow {
+            display: none;
+        }
+
+            #loadRow.visible {
+                display: flex;
+            }
+
+        #playRow {
+            display: none;
+        }
+
+            #playRow.visible {
+                display: flex;
+            }
+
+        #status {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        #position {
+            font-family: monospace;
+        }
+    </style>
 </head>
 <body>
-    <h1>Sync Player — скелет готов</h1>
-    <p id="status">Ожидание подключения второго пира...</p>
-    <p id="position">Позиция: 0.00с (пауза)</p>
-    <button id="playBtn" style="display:none">Play</button>
-    <button id="pauseBtn" style="display:none">Pause</button>
+    <h1>Sync Player</h1>
+    <p id="status">Ожидание подключения...</p>
+    <div id="trackInfo">Трек не загружен</div>
+    <p id="position">Позиция: 0.00с</p>
+
+    <div class="controls" id="loadRow">
+        <input id="trackUrlInput" type="text" placeholder="https://music.yandex.ru/track/35244922" value="https://music.yandex.ru/track/35244922" />
+        <button id="loadBtn">Load</button>
+    </div>
+
+    <div class="controls" id="playRow">
+        <button id="playBtn">Play</button>
+        <button id="pauseBtn">Pause</button>
+    </div>
+
     <script src="renderer.js"></script>
 </body>
 </html>
