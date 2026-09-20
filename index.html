@@ -7,12 +7,12 @@
         body {
             font-family: system-ui, sans-serif;
             padding: 20px;
-            max-width: 700px;
+            max-width: 750px;
             margin: 0 auto;
         }
 
         #trackInfo {
-            font-size: 1.1em;
+            font-size: 1.05em;
             margin: 10px 0;
             padding: 10px;
             background: #f0f0f0;
@@ -40,11 +40,16 @@
                 cursor: pointer;
             }
 
-        #loadRow {
+        #status {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        #searchRow {
             display: none;
         }
 
-            #loadRow.visible {
+            #searchRow.visible {
                 display: flex;
             }
 
@@ -55,11 +60,6 @@
             #playRow.visible {
                 display: flex;
             }
-
-        #status {
-            color: #666;
-            font-size: 0.9em;
-        }
 
         /* Прогресс-бар */
         #seekRow {
@@ -88,7 +88,6 @@
 
             #seekBar::-webkit-slider-thumb {
                 -webkit-appearance: none;
-                appearance: none;
                 width: 16px;
                 height: 16px;
                 border-radius: 50%;
@@ -106,10 +105,79 @@
                 opacity: 0.5;
             }
 
-                #seekBar:disabled::-webkit-slider-thumb {
-                    cursor: not-allowed;
-                    background: #999;
-                }
+        /* Результаты поиска */
+        #searchResults {
+            display: none;
+            max-height: 360px;
+            overflow-y: auto;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            background: #fff;
+        }
+
+            #searchResults.visible {
+                display: block;
+            }
+
+        .searchItem {
+            display: flex;
+            gap: 12px;
+            padding: 8px 10px;
+            cursor: pointer;
+            border-bottom: 1px solid #eee;
+            align-items: center;
+        }
+
+            .searchItem:last-child {
+                border-bottom: none;
+            }
+
+            .searchItem:hover {
+                background: #f5f7fa;
+            }
+
+            .searchItem img {
+                width: 48px;
+                height: 48px;
+                border-radius: 4px;
+                object-fit: cover;
+                flex-shrink: 0;
+                background: #eee;
+            }
+
+            .searchItem .info {
+                flex: 1;
+                min-width: 0;
+            }
+
+            .searchItem .title {
+                font-weight: 600;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .searchItem .subtitle {
+                font-size: 0.85em;
+                color: #666;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .searchItem .duration {
+                font-family: monospace;
+                color: #666;
+                font-size: 0.85em;
+            }
+
+        .searchHint {
+            padding: 12px;
+            color: #888;
+            text-align: center;
+            font-size: 0.9em;
+        }
     </style>
 </head>
 <body>
@@ -123,10 +191,11 @@
         <span id="timeTotal">0:00</span>
     </div>
 
-    <div class="controls" id="loadRow">
-        <input id="trackUrlInput" type="text" placeholder="https://music.yandex.ru/track/35244922" value="https://music.yandex.ru/track/35244922" />
-        <button id="loadBtn">Load</button>
+    <div class="controls" id="searchRow">
+        <input id="searchInput" type="text" placeholder="Название трека или исполнитель..." />
+        <button id="searchBtn">Найти</button>
     </div>
+    <div id="searchResults"></div>
 
     <div class="controls" id="playRow">
         <button id="playBtn">Play</button>

@@ -9,17 +9,19 @@ const seekRow = document.getElementById('seekRow');
 const seekBar = document.getElementById('seekBar');
 const timeCurrentEl = document.getElementById('timeCurrent');
 const timeTotalEl = document.getElementById('timeTotal');
-const loadRow = document.getElementById('loadRow');
+const searchRow = document.getElementById('searchRow');
+const searchInput = document.getElementById('searchInput');
+const searchBtn = document.getElementById('searchBtn');
+const searchResultsEl = document.getElementById('searchResults');
 const playRow = document.getElementById('playRow');
-const trackUrlInput = document.getElementById('trackUrlInput');
-const loadBtn = document.getElementById('loadBtn');
 const playBtn = document.getElementById('playBtn');
 const pauseBtn = document.getElementById('pauseBtn');
 
 const audio = new Audio();
 audio.crossOrigin = 'anonymous';
 let audioReady = false;
-let isSeeking = false; // пользователь тащит ползунок
+let isSeeking = false;
+let currentTrack = null; // { id, title, artists, ... }
 
 let ws;
 let pc = null;
@@ -41,7 +43,7 @@ const rtcConfig = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 };
 
-// --- Вспомогательные ---
+// --- Утилиты ---
 function formatTime(sec) {
   if (!isFinite(sec) || sec < 0) sec = 0;
   const m = Math.floor(sec / 60);
@@ -63,7 +65,7 @@ ws.onmessage = async (event) => {
   if (msg.type === 'role') {
     role = msg.role;
     isHost = role === 'offerer';
-    if (isHost) loadRow.classList.add('visible');
+    if (isHost) searchRow.classList.add('visible');
     return;
   }
 
@@ -128,8 +130,73 @@ function setupDataChannel() {
   };
 }
 
+// --- Поиск треков ---
+async function doSearch() {
+  const query = searchInput.value.trim();
+  if (!query) return;
+
+  searchResultsEl.innerHTML = '<div class="searchHint">Поиск...</div>';
+  searchResultsEl.classList.add('visible');
+
+  try {
+    const tracks = await ipcRenderer.invoke('search-tracks', query);
+    renderResults(tracks);
+  } catch (err) {
+    console.error('Search error:', err);
+    searchResultsEl.innerHTML = '<div class="searchHint">Ошибка поиска: ' + err.message + '</div>';
+  }
+}
+
+function renderResults(tracks) {
+  if (!tracks.length) {
+    searchResultsEl.innerHTML = '<div class="searchHint">Ничего не найдено</div>';
+    return;
+  }
+
+  searchResultsEl.innerHTML = '';
+  tracks.forEach(t => {
+    const item = document.createElement('div');
+    item.className = 'searchItem';
+
+    const img = document.createElement('img');
+    if (t.cover) img.src = t.cover;
+    item.appendChild(img);
+
+    const info = document.createElement('div');
+    info.className = 'info';
+    const title = document.createElement('div');
+    title.className = 'title';
+    title.textContent = t.title + (t.version ? ` (${t.version})` : '');
+    const sub = document.createElement('div');
+    sub.className = 'subtitle';
+    sub.textContent = `${t.artists}${t.album ? ' • ' + t.album : ''}`;
+    info.appendChild(title);
+    info.appendChild(sub);
+    item.appendChild(info);
+
+    const dur = document.createElement('div');
+    dur.className = 'duration';
+    dur.textContent = formatTime(t.durationMs / 1000);
+    item.appendChild(dur);
+
+    item.addEventListener('click', () => pickTrack(t));
+    searchResultsEl.appendChild(item);
+  });
+}
+
+function pickTrack(track) {
+  // 1. Отправляем команду "load" партнёру
+  if (dataChannel && dataChannel.readyState === 'open') {
+    dataChannel.send(JSON.stringify({ type: 'load', track }));
+  }
+  // 2. Грузим локально
+  loadTrack(track);
+  // 3. Скрываем список
+  searchResultsEl.classList.remove('visible');
+}
+
 // --- Загрузка трека ---
-async function loadTrack(trackUrl) {
+async function loadTrack(track) {
   try {
     audioReady = false;
     seekBar.disabled = true;
@@ -137,10 +204,11 @@ async function loadTrack(trackUrl) {
     audio.removeAttribute('src');
     audio.load();
 
+    currentTrack = track;
     statusEl.textContent = 'Загружаем трек...';
-    trackInfoEl.textContent = 'Загрузка: ' + trackUrl;
+    trackInfoEl.textContent = `Загрузка: ${track.artists} — ${track.title}`;
 
-    const directUrl = await ipcRenderer.invoke('get-audio-url', trackUrl);
+    const directUrl = await ipcRenderer.invoke('get-audio-url', track.id);
     audio.src = directUrl;
 
     await new Promise((resolve, reject) => {
@@ -156,10 +224,8 @@ async function loadTrack(trackUrl) {
     });
 
     audioReady = true;
-    const trackId = trackUrl.split('/').pop();
-    trackInfoEl.textContent = `Трек #${trackId} • ${formatTime(audio.duration)}`;
+    trackInfoEl.textContent = `${track.artists} — ${track.title} • ${formatTime(audio.duration)}`;
 
-    // Настраиваем прогресс-бар
     seekBar.max = audio.duration;
     seekBar.value = 0;
     seekBar.disabled = false;
@@ -168,6 +234,7 @@ async function loadTrack(trackUrl) {
     seekRow.classList.add('visible');
 
     statusEl.textContent = 'Трек готов. Хост может нажать Play.';
+    document.title = `${track.artists} — ${track.title} | Sync Player`;
   } catch (err) {
     console.error('Ошибка загрузки:', err);
     statusEl.textContent = 'Ошибка загрузки: ' + err.message;
@@ -175,7 +242,7 @@ async function loadTrack(trackUrl) {
   }
 }
 
-// --- Сообщения ---
+// --- Сообщения по сети ---
 function handleMessage(msg) {
   if (msg.type === 'ping') {
     const t1 = Date.now();
@@ -199,8 +266,8 @@ function handleMessage(msg) {
   }
 
   if (msg.type === 'load') {
-    console.log('Получена команда load:', msg.trackUrl);
-    loadTrack(msg.trackUrl);
+    console.log('Получена команда load:', msg.track);
+    loadTrack(msg.track);
     return;
   }
 }
@@ -223,10 +290,10 @@ function finishClockSync() {
   statusEl.textContent = `Синхронизация: RTT ${avgRtt.toFixed(0)}мс`;
 }
 
-// --- Команды ---
+// --- Команды play/pause/seek ---
 function sendCommand(action, extraPosition) {
   if (!audioReady) {
-    statusEl.textContent = 'Сначала загрузи трек';
+    statusEl.textContent = 'Сначала выбери трек';
     return;
   }
   const position = extraPosition !== undefined ? extraPosition : audio.currentTime;
@@ -258,7 +325,6 @@ function scheduleCommand(action, position, hostScheduledAt, isLocalHost = false)
       stopPositionTimer();
     } else if (action === 'seek') {
       audio.currentTime = position;
-      // если играло — играет с новой точки; если пауза — остаётся на паузе
       if (!audio.paused) startPositionTimer();
     }
   }, Math.max(0, delay));
@@ -268,8 +334,6 @@ function startPositionTimer() {
   stopPositionTimer();
   positionTimer = setInterval(() => {
     virtualPosition = audio.currentTime;
-
-    // Обновляем ползунок, только если пользователь его не тащит
     if (!isSeeking) {
       seekBar.value = audio.currentTime;
       timeCurrentEl.textContent = formatTime(audio.currentTime);
@@ -282,36 +346,28 @@ function stopPositionTimer() {
   timeCurrentEl.textContent = formatTime(audio.currentTime);
 }
 
-// --- Прогресс-бар / seek ---
-// Пока тащим — показываем время под курсором, но НЕ отправляем команду
+// --- UI ---
+searchBtn.addEventListener('click', doSearch);
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doSearch();
+});
+
 seekBar.addEventListener('input', () => {
   isSeeking = true;
   timeCurrentEl.textContent = formatTime(parseFloat(seekBar.value));
 });
 
-// Отпустили ползунок — отправляем seek и возвращаем управление
 seekBar.addEventListener('change', () => {
   const newPos = parseFloat(seekBar.value);
   isSeeking = false;
   sendCommand('seek', newPos);
 });
 
-// --- Кнопки ---
-loadBtn.addEventListener('click', () => {
-  const url = trackUrlInput.value.trim();
-  if (!url) return;
-  if (dataChannel && dataChannel.readyState === 'open') {
-    dataChannel.send(JSON.stringify({ type: 'load', trackUrl: url }));
-  }
-  loadTrack(url);
-});
-
 playBtn.addEventListener('click', () => sendCommand('play'));
 pauseBtn.addEventListener('click', () => sendCommand('pause'));
 
-// Пробел — локальный play/pause
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' && audioReady) {
+  if (e.code === 'Space' && audioReady && e.target.tagName !== 'INPUT') {
     e.preventDefault();
     if (audio.paused) audio.play(); else audio.pause();
   }
