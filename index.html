@@ -178,6 +178,61 @@
             text-align: center;
             font-size: 0.9em;
         }
+        #volumeRow {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin: 10px 0 15px 0;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+
+            #volumeRow button {
+                background: none;
+                border: none;
+                font-size: 20px;
+                cursor: pointer;
+                padding: 4px;
+                width: 36px;
+                height: 36px;
+                border-radius: 50%;
+                transition: background 0.15s;
+            }
+
+                #volumeRow button:hover {
+                    background: #eee;
+                }
+
+        #volumeBar {
+            flex: 1;
+            -webkit-appearance: none;
+            appearance: none;
+            height: 5px;
+            background: #ddd;
+            border-radius: 3px;
+            outline: none;
+            cursor: pointer;
+        }
+
+            #volumeBar::-webkit-slider-thumb {
+                -webkit-appearance: none;
+                width: 14px;
+                height: 14px;
+                border-radius: 50%;
+                background: #333;
+                cursor: pointer;
+                transition: transform 0.1s;
+            }
+
+                #volumeBar::-webkit-slider-thumb:hover {
+                    transform: scale(1.2);
+                }
+
+        #volumeLabel {
+            min-width: 45px;
+            text-align: right;
+            color: #666;
+        }
     </style>
 </head>
 <body>
@@ -185,10 +240,18 @@
     <p id="status">Ожидание подключения...</p>
     <div id="trackInfo">Трек не загружен</div>
 
+    <!-- Прогресс-бар -->
     <div id="seekRow">
         <span id="timeCurrent">0:00</span>
         <input type="range" id="seekBar" min="0" max="1" step="0.01" value="0" disabled />
         <span id="timeTotal">0:00</span>
+    </div>
+
+    <!-- Громкость -->
+    <div id="volumeRow">
+        <button id="muteBtn" title="Mute">🔊</button>
+        <input type="range" id="volumeBar" min="0" max="1" step="0.01" value="1" />
+        <span id="volumeLabel">100%</span>
     </div>
 
     <div class="controls" id="searchRow">

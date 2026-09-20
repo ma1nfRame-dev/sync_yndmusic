@@ -1,3 +1,7 @@
+const volumeRow = document.getElementById('volumeRow');
+const volumeBar = document.getElementById('volumeBar');
+const volumeLabel = document.getElementById('volumeLabel');
+const muteBtn = document.getElementById('muteBtn');
 const { ipcRenderer } = require('electron');
 
 const ROOM = 'test-room-1';
@@ -372,3 +376,46 @@ window.addEventListener('keydown', (e) => {
     if (audio.paused) audio.play(); else audio.pause();
   }
 });
+
+// --- Громкость ---
+let lastVolume = 1; // запоминаем громкость до mute
+
+function updateVolumeUI() {
+  const v = audio.muted ? 0 : audio.volume;
+  volumeBar.value = v;
+  volumeLabel.textContent = Math.round(v * 100) + '%';
+
+  if (audio.muted || audio.volume === 0) {
+    muteBtn.textContent = '🔇';
+  } else if (audio.volume < 0.34) {
+    muteBtn.textContent = '🔈';
+  } else if (audio.volume < 0.67) {
+    muteBtn.textContent = '🔉';
+  } else {
+    muteBtn.textContent = '🔊';
+  }
+}
+
+volumeBar.addEventListener('input', () => {
+  const v = parseFloat(volumeBar.value);
+  audio.muted = false;
+  audio.volume = v;
+  if (v > 0) lastVolume = v;
+  updateVolumeUI();
+});
+
+muteBtn.addEventListener('click', () => {
+  if (audio.muted || audio.volume === 0) {
+    // Возвращаем звук
+    audio.muted = false;
+    audio.volume = lastVolume > 0 ? lastVolume : 1;
+  } else {
+    // Запоминаем текущую громкость и глушим
+    lastVolume = audio.volume;
+    audio.muted = true;
+  }
+  updateVolumeUI();
+});
+
+// Инициализируем UI
+updateVolumeUI();
