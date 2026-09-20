@@ -7,7 +7,7 @@
         body {
             font-family: system-ui, sans-serif;
             padding: 20px;
-            max-width: 750px;
+            max-width: 1100px;
             margin: 0 auto;
         }
 
@@ -178,6 +178,8 @@
             text-align: center;
             font-size: 0.9em;
         }
+
+        /* Громкость */
         #volumeRow {
             display: flex;
             align-items: center;
@@ -233,6 +235,7 @@
             text-align: right;
             color: #666;
         }
+
         /* Layout */
         #layout {
             display: flex;
@@ -345,9 +348,123 @@
             color: #999;
             font-size: 0.9em;
         }
+
+        /* Кнопка настроек */
+        #settingsBtn {
+            position: fixed;
+            top: 15px;
+            right: 15px;
+            background: #fff;
+            border: 1px solid #ddd;
+            font-size: 20px;
+            cursor: pointer;
+            z-index: 10;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            transition: background 0.15s, transform 0.15s;
+        }
+
+            #settingsBtn:hover {
+                background: #f0f0f0;
+                transform: rotate(45deg);
+            }
+
+        /* Модальное окно настроек */
+        #settingsModal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+        }
+
+            #settingsModal.visible {
+                display: flex;
+            }
+
+            #settingsModal .modal {
+                background: #fff;
+                border-radius: 12px;
+                padding: 24px;
+                width: 480px;
+                max-width: 90vw;
+                max-height: 90vh;
+                overflow-y: auto;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            }
+
+            #settingsModal h2 {
+                margin-top: 0;
+                margin-bottom: 20px;
+            }
+
+        .field {
+            margin-bottom: 16px;
+        }
+
+            .field label {
+                display: block;
+                font-weight: 600;
+                margin-bottom: 6px;
+                font-size: 0.9em;
+            }
+
+            .field input {
+                width: 100%;
+                padding: 10px;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                box-sizing: border-box;
+                font-family: monospace;
+                font-size: 13px;
+            }
+
+            .field .hint {
+                font-size: 0.78em;
+                color: #888;
+                margin-top: 4px;
+            }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 24px;
+        }
+
+            .modal-actions button {
+                padding: 10px 20px;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 14px;
+            }
+
+        #settingsCancelBtn {
+            border: 1px solid #ddd;
+            background: #fff;
+        }
+
+        #settingsSaveBtn {
+            border: none;
+            background: #1e88e5;
+            color: #fff;
+        }
+
+            #settingsSaveBtn:hover {
+                background: #1976d2;
+            }
     </style>
 </head>
 <body>
+    <!-- Кнопка настроек -->
+    <button id="settingsBtn" title="Настройки">⚙️</button>
+
     <div id="layout">
         <div id="mainColumn">
             <h1>Sync Player</h1>
@@ -355,7 +472,7 @@
 
             <div id="trackInfo">
                 <div id="trackTitle">Трек не загружен</div>
-                <div id="trackQueue" style="font-size:0.85em; color:#667; font-family:monospace; margin-top:4px;"></div>
+                <div id="trackQueue" style="font-size:0.85em; color:#666; font-family:monospace; margin-top:4px;"></div>
             </div>
 
             <div id="seekRow">
@@ -388,6 +505,42 @@
         <div id="queuePanel">
             <div id="queueHeader">Очередь</div>
             <div id="queueList"></div>
+        </div>
+    </div>
+
+    <!-- Модальное окно настроек -->
+    <div id="settingsModal">
+        <div class="modal">
+            <h2>Настройки</h2>
+
+            <div class="field">
+                <label>Токен Яндекс.Музыки</label>
+                <input type="password" id="ymTokenInput" placeholder="Вставьте ваш токен" />
+                <div class="hint">Как получить токен — см. инструкцию</div>
+            </div>
+
+            <div class="field">
+                <label>UID (ID пользователя)</label>
+                <input type="text" id="ymUidInput" placeholder="Например: 123456789" />
+                <div class="hint">Если не знаешь — попробуй <code>1</code>, часто работает</div>
+            </div>
+
+            <div class="field">
+                <label>Адрес Signaling-сервера</label>
+                <input type="text" id="signalingUrlInput" placeholder="ws://localhost:8080" />
+                <div class="hint">Для друга через интернет — <code>wss://...trycloudflare.com</code></div>
+            </div>
+
+            <div class="field">
+                <label>Название комнаты</label>
+                <input type="text" id="roomNameInput" placeholder="test-room-1" />
+                <div class="hint">Вы с другом должны ввести одинаковое имя</div>
+            </div>
+
+            <div class="modal-actions">
+                <button id="settingsCancelBtn">Отмена</button>
+                <button id="settingsSaveBtn">Сохранить</button>
+            </div>
         </div>
     </div>
 
