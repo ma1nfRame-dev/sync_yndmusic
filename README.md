@@ -150,3 +150,8 @@ Yandex Music is a trademark of Yandex.
 <p align="center">
   Made with ❤️ for music
 </p>
+
+
+<p align="center">
+  <img src="assets/dalbayeby.png" alt=":)" width="300">
+</p>
