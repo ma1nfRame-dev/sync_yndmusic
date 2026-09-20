@@ -42,8 +42,6 @@
   <img src="assets/preview.png" alt="Sync YND Music" width="900">
 </p>
 
-> Добавьте сюда скриншот приложения, например `assets/preview.png`.
-
 ---
 
 ## 🚀 Getting Started
@@ -126,8 +124,6 @@ npm run build
 <a href="https://github.com/ma1nfRame-dev">
   <img src="https://github.com/ma1nfRame-dev.png" width="80px" alt="ma1nfRame-dev">
 </a>
-
-    
 
 <a href="https://github.com/Shuupa">
   <img src="https://github.com/Shuupa.png" width="80px" alt="Shuupa">
