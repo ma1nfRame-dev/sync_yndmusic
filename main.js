@@ -55,6 +55,11 @@ function saveSettings(obj) {
     }
 }
 
+function getYandexToken() {
+    const s = loadSettings();
+    return String(s.ymToken || process.env.YM_TOKEN || '').trim();
+}
+
 // --- API Яндекс.Музыки ---
 let apiPromise = null;
 function getApi() {
@@ -90,23 +95,50 @@ function getApi() {
     return apiPromise;
 }
 
-// --- Текст трека ---
-//
-// Важно: текущий backend Yandex Music требует для /tracks/{id}/lyrics
-// дополнительные параметры timeStamp + sign (+ durationMs). Старый
-// yamd2 вызывает этот endpoint только с format, поэтому API отвечает:
-// "timeStamp: Parameter value is not set, sign: Parameter value is not set".
-//
-// Для lyrics используем отдельный актуальный клиент @dvxch/yandex-music,
-// который формирует корректный запрос. Основной yamd2 при этом остаётся
-// для поиска, радио и получения аудио.
+// --- Прямой HTTPS-запрос к Yandex Music API (для feedback) ---
+const https = require('https');
+const http = require('http');
+const zlib = require('zlib');
 
-let lyricsClientPromise = null;
+const YM_API_HOST = 'api.music.yandex.net';
 
-function getYandexToken() {
-    const s = loadSettings();
-    return String(s.ymToken || process.env.YM_TOKEN || '').trim();
+function ymApiPost(pathname, body) {
+    return new Promise((resolve, reject) => {
+        const token = getYandexToken();
+        if (!token) return reject(new Error('Токен не настроен'));
+
+        const data = JSON.stringify(body);
+        const req = https.request({
+            hostname: YM_API_HOST,
+            path: pathname,
+            method: 'POST',
+            headers: {
+                'Authorization': `OAuth ${token}`,
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(data),
+                'User-Agent': 'Yandex-Music-API'
+            },
+            timeout: 10000
+        }, (res) => {
+            const chunks = [];
+            res.on('data', c => chunks.push(c));
+            res.on('end', () => {
+                const text = Buffer.concat(chunks).toString('utf8');
+                let parsed = null;
+                try { parsed = JSON.parse(text); } catch (e) { }
+                resolve({ status: res.statusCode, body: parsed || text });
+            });
+        });
+
+        req.on('error', reject);
+        req.on('timeout', () => req.destroy(new Error('timeout')));
+        req.write(data);
+        req.end();
+    });
 }
+
+// --- Текст трека ---
+let lyricsClientPromise = null;
 
 async function getLyricsClient() {
     if (!lyricsClientPromise) {
@@ -116,8 +148,6 @@ async function getLyricsClient() {
                 throw new Error('Токен Яндекс.Музыки не настроен');
             }
 
-            // @dvxch/yandex-music — ESM-only пакет, поэтому в CommonJS
-            // используем динамический import().
             const { Client } = await import('@dvxch/yandex-music');
 
             console.log('🎤 Инициализация отдельного клиента lyrics API');
@@ -131,10 +161,6 @@ async function getLyricsClient() {
 
     return lyricsClientPromise;
 }
-
-const https = require('https');
-const http = require('http');
-const zlib = require('zlib');
 
 function fetchTextUrl(url, redirects = 0) {
     return new Promise((resolve, reject) => {
@@ -211,7 +237,6 @@ function pickLyricsText(value, depth = 0) {
 
     if (typeof value !== 'object') return null;
 
-    // В supplement Yandex могут встречаться разные формы lyrics.
     for (const key of [
         'fullLyrics',
         'lyrics',
@@ -266,7 +291,6 @@ ipcMain.handle('get-track-lyrics', async (_event, trackId) => {
     const id = String(trackId || '').trim();
     if (!id) return { available: false, synced: false };
 
-    // 1) LRC — основной путь для караоке.
     try {
         const result = await fetchLyricsViaModernClient(id, 'LRC');
 
@@ -286,7 +310,6 @@ ipcMain.handle('get-track-lyrics', async (_event, trackId) => {
         console.log(`  ⚠️ LRC через современный клиент не сработал для ${id}: ${e.message}`);
     }
 
-    // 2) TEXT — обычный текст как fallback.
     try {
         const result = await fetchLyricsViaModernClient(id, 'TEXT');
 
@@ -306,7 +329,6 @@ ipcMain.handle('get-track-lyrics', async (_event, trackId) => {
         console.log(`  ⚠️ TEXT через современный клиент не сработал для ${id}: ${e.message}`);
     }
 
-    // 3) Последний fallback — supplement старого клиента.
     try {
         const { api } = await getApi();
         const supplement = await api.tracks.getTrackSupplement(id);
@@ -330,7 +352,6 @@ ipcMain.handle('get-track-lyrics', async (_event, trackId) => {
 
 // --- Нормализация трека ---
 function normalizeTrack(t) {
-    // у POST /tracks обложка иногда лежит только на уровне альбома
     const coverUri = t.coverUri || t.albums?.[0]?.coverUri || null;
     return {
         id: t.id || t.realId,
@@ -372,7 +393,6 @@ ipcMain.handle('search-tracks', async (_event, query, mode = 'tracks') => {
     const result = await api.search.tracks(q);
     const rawTracks = result?.tracks?.results || [];
 
-    // Режим "Треки" — просто отдаём как есть
     if (mode !== 'artist') {
         const tracks = rawTracks
             .filter(t => t.available !== false)
@@ -382,7 +402,6 @@ ipcMain.handle('search-tracks', async (_event, query, mode = 'tracks') => {
         return tracks;
     }
 
-    // Режим "Исполнитель" — тянем треки найденного артиста первыми
     console.log(`  → треков по названию: ${rawTracks.length}, ищем исполнителя...`);
 
     let artistTracks = [];
@@ -403,7 +422,6 @@ ipcMain.handle('search-tracks', async (_event, query, mode = 'tracks') => {
         console.log(`  ⚠️ Не смог получить треки исполнителя: ${e.message}`);
     }
 
-    // Объединяем: артист первым, потом обычные треки, убираем дубли
     const seen = new Set();
     const merged = [];
     const pushTrack = (t) => {
@@ -440,38 +458,140 @@ ipcMain.handle('radio-start', async () => {
     const sessionId = session?.sessionId || session?.id || session?.radioSessionId;
     if (!sessionId) throw new Error('Не удалось получить sessionId');
     console.log('📻 sessionId:', sessionId);
+
+    // Диагностика: покажем какие методы вообще есть в api.radio
+    try {
+        const proto = Object.getOwnPropertyNames(Object.getPrototypeOf(api.radio)).filter(n => n !== 'constructor');
+        const own = Object.getOwnPropertyNames(api.radio);
+        console.log('📻 api.radio proto methods:', proto.join(', '));
+        console.log('📻 api.radio own props:', own.join(', '));
+    } catch (e) {
+        console.log('📻 Не смог получить методы api.radio:', e.message);
+    }
+
     const batch = await api.radio.postRotorSessionTracks(sessionId);
     const tracks = extractRotorTracks(batch);
     console.log(`📻 Волна запущена, треков: ${tracks.length}`);
     return { sessionId, tracks };
 });
 
-ipcMain.handle('radio-next', async (_event, sessionId) => {
+// --- Волна: следующая порция с фильтрацией ---
+ipcMain.handle('radio-next', async (_event, sessionId, excludeIds = []) => {
     const { api } = await getApi();
-    console.log('📻 Следующая порция для sessionId:', sessionId);
-    const batch = await api.radio.postRotorSessionTracks(sessionId);
-    const tracks = extractRotorTracks(batch);
-    console.log(`📻 Получено ещё ${tracks.length} треков`);
-    return tracks;
+    const exclude = new Set((excludeIds || []).map(String));
+    console.log(`📻 Запрос порции: sessionId=${sessionId}, исключаем ${exclude.size} уже виденных`);
+
+    const collected = [];
+    const collectedIds = new Set();
+    const TARGET = 5;
+    const MAX_ATTEMPTS = 5;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const batch = await api.radio.postRotorSessionTracks(sessionId);
+        const tracks = extractRotorTracks(batch);
+
+        let fresh = 0;
+        for (const t of tracks) {
+            const id = String(t.id);
+            if (!id) continue;
+            if (exclude.has(id)) continue;
+            if (collectedIds.has(id)) continue;
+            collectedIds.add(id);
+            collected.push(t);
+            fresh++;
+        }
+
+        console.log(`📻 Попытка ${attempt}: получено ${tracks.length}, новых ${fresh}, всего набрано ${collected.length}`);
+
+        if (collected.length >= TARGET) break;
+    }
+
+    console.log(`📻 Итог: ${collected.length} треков (после фильтрации)`);
+    return collected;
 });
 
-// --- Избранное (лайкнутые треки) ---
-const LIKED_BATCH_SIZE = 100;   // сколько треков тянем метаданными за один запрос
-const LIKED_MAX_TRACKS = 300;   // потолок очереди: ~125 КБ JSON, чтобы playlist-update пролез в DataChannel
+// --- Волна: feedback (HTTP + fallback на yamd2) ---
+const FEEDBACK_TYPE_MAP = {
+    'start': 'trackStarted',
+    'end': 'trackFinished',
+    'skip': 'skip',
+    'like': 'like',
+    'dislike': 'dislike'
+};
 
-let likedCache = null;          // кэш полного списка (тянется по кнопке "Избранное")
-let likedIdsCache = null;       // кэш id-шников для отметок "лайкнуто" в поиске/очереди (Set<string>)
+ipcMain.handle('radio-feedback', async (_event, sessionId, type, trackId) => {
+    const sid = String(sessionId || '');
+    const tid = String(trackId || '');
+    if (!sid || !type || !tid) return { success: false, reason: 'bad-args' };
 
-// Фолбэк, если POST /tracks не примет батч — тянем поштучно
+    const rotorType = FEEDBACK_TYPE_MAP[type] || type;
+
+    // Вариант 1: POST /rotor/session/{sid}/feedback с body
+    try {
+        const res = await ymApiPost(
+            `/rotor/session/${encodeURIComponent(sid)}/feedback`,
+            { type: rotorType, trackId: tid }
+        );
+        if (res.status >= 200 && res.status < 300) {
+            console.log(`📻 Feedback OK (http-session): ${rotorType}/${tid}`);
+            return { success: true, via: 'http-session', status: res.status };
+        }
+        console.log(`📻 Feedback http-session вернул ${res.status}:`, JSON.stringify(res.body).slice(0, 200));
+    } catch (e) {
+        console.log(`📻 Feedback http-session error: ${e.message}`);
+    }
+
+    // Вариант 2: с query-параметрами
+    try {
+        const qs = new URLSearchParams({ type: rotorType, track_id: tid }).toString();
+        const res = await ymApiPost(
+            `/rotor/session/${encodeURIComponent(sid)}/feedback?${qs}`,
+            {}
+        );
+        if (res.status >= 200 && res.status < 300) {
+            console.log(`📻 Feedback OK (http-session-qs): ${rotorType}/${tid}`);
+            return { success: true, via: 'http-session-qs', status: res.status };
+        }
+        console.log(`📻 Feedback http-session-qs вернул ${res.status}:`, JSON.stringify(res.body).slice(0, 200));
+    } catch (e) {
+        console.log(`📻 Feedback http-session-qs error: ${e.message}`);
+    }
+
+    // Вариант 3: yamd2 fallback — вдруг там всё-таки есть метод
+    try {
+        const { api } = await getApi();
+        const methods = ['rotorSessionFeedback', 'postRotorSessionFeedback', 'rotorFeedback', 'feedback', 'sendFeedback'];
+        for (const method of methods) {
+            if (typeof api.radio?.[method] === 'function') {
+                try {
+                    await api.radio[method](sid, rotorType, tid);
+                    console.log(`📻 Feedback OK (yamd2.${method}): ${rotorType}/${tid}`);
+                    return { success: true, via: `yamd2.${method}` };
+                } catch (e) {
+                    console.log(`📻 Feedback (yamd2.${method}) упал: ${e.message}`);
+                }
+            }
+        }
+    } catch (e) {
+        console.log(`📻 Feedback yamd2 fallback error: ${e.message}`);
+    }
+
+    console.log(`📻 Feedback не отправлен ни одним способом: ${rotorType}/${tid}`);
+    return { success: false, reason: 'all-methods-failed' };
+});
+
+// --- Избранное ---
+const LIKED_BATCH_SIZE = 100;
+const LIKED_MAX_TRACKS = 300;
+
+let likedCache = null;
+let likedIdsCache = null;
+
 async function fetchTracksOneByOne(api, ids) {
     const settled = await Promise.allSettled(ids.map(id => api.tracks.getSingleTrack(id)));
     return settled.filter(r => r.status === 'fulfilled').map(r => r.value);
 }
 
-// uid из настроек может быть плейсхолдером ("1" и т.п.) и не совпадать
-// с реальным владельцем токена — тогда любой /users/{uid}/... эндпоинт падает с
-// "ownerOtherwiseUserBindingError: owner must have music sid".
-// Поэтому везде, где нужен uid, берём настоящий из аккаунта, привязанного к токену.
 async function resolveRealUid(api) {
     try {
         const status = await api.account.getAccountStatus();
@@ -505,7 +625,6 @@ ipcMain.handle('get-liked-tracks', async (event, opts = {}) => {
     const { api } = await getApi();
     const realUid = await resolveRealUid(api);
 
-    // GET /users/{uid}/likes/tracks — отдаёт ВЕСЬ список разом, но только {id, albumId, timestamp}
     let lib;
     try {
         lib = await api.user.getLikedTracks(realUid);
@@ -515,7 +634,6 @@ ipcMain.handle('get-liked-tracks', async (event, opts = {}) => {
     const metas = lib?.library?.tracks || [];
     const totalLiked = metas.length;
 
-    // Заодно обновляем кэш id-шников — он уже у нас в руках
     likedIdsCache = new Set(metas.map(m => String(m.id)).filter(Boolean));
 
     if (!totalLiked) {
@@ -524,7 +642,6 @@ ipcMain.handle('get-liked-tracks', async (event, opts = {}) => {
         return likedCache;
     }
 
-    // Берём самые свежие лайки — Яндекс отдаёт их первыми
     const ids = metas.slice(0, LIKED_MAX_TRACKS).map(m => String(m.id)).filter(Boolean);
     const truncated = totalLiked > ids.length;
     console.log(`❤️ Лайков всего: ${totalLiked}, берём: ${ids.length}${truncated ? ' (обрезано)' : ''}`);
@@ -566,12 +683,7 @@ ipcMain.handle('get-liked-tracks', async (event, opts = {}) => {
     return likedCache;
 });
 
-
-// --- Лайк / дизлайк трека ---
-
-// Лёгкий список id избранного — для отметок в поиске/очереди.
-// force игнорируется намеренно: список маленький (одни id), тянуть его лишний
-// раз недорого, а свежесть тут важнее кэша.
+// --- Лайк / дизлайк ---
 ipcMain.handle('get-liked-ids', async () => {
     try {
         const { api } = await getApi();
@@ -599,7 +711,7 @@ ipcMain.handle('like-track', async (_event, trackId) => {
     }
 
     if (likedIdsCache) likedIdsCache.add(id);
-    likedCache = null; // полный список избранного теперь неактуален
+    likedCache = null;
     console.log('❤️ Лайкнут трек', id);
     return { success: true };
 });
@@ -618,7 +730,7 @@ ipcMain.handle('unlike-track', async (_event, trackId) => {
     }
 
     if (likedIdsCache) likedIdsCache.delete(id);
-    likedCache = null; // полный список избранного теперь неактуален
+    likedCache = null;
     console.log('💔 Убран лайк с трека', id);
     return { success: true };
 });
@@ -631,7 +743,7 @@ ipcMain.handle('settings-load', async () => {
         ymUid: s.ymUid || '',
         signalingUrl: s.signalingUrl || 'ws://localhost:8080',
         roomName: s.roomName || 'test-room-1',
-        searchMode: s.searchMode || 'artist' // 'artist' | 'tracks'
+        searchMode: s.searchMode || 'artist'
     };
 });
 
@@ -647,7 +759,7 @@ ipcMain.handle('settings-save', async (_event, config) => {
     });
     if (ok) {
         apiPromise = null;
-        likedCache = null;    // токен/uid могли смениться — кэш избранного невалиден
+        likedCache = null;
         likedIdsCache = null;
         console.log('✅ Настройки сохранены в', getSettingsPath());
         return { success: true };
@@ -655,7 +767,7 @@ ipcMain.handle('settings-save', async (_event, config) => {
     return { success: false, error: 'Не смог записать файл' };
 });
 
-// --- OAuth Яндекс ---
+// --- OAuth ---
 const YANDEX_CLIENT_ID = '23cabbbdc6cd418abb4b39c32c41195d';
 const YANDEX_AUTH_URL = `https://oauth.yandex.ru/authorize?response_type=token&client_id=${YANDEX_CLIENT_ID}`;
 
@@ -707,10 +819,7 @@ ipcMain.handle('oauth-login', async () => {
     });
 });
 
-// =========================================================
-// CUSTOM WINDOW CONTROLS
-// =========================================================
-
+// --- Custom window controls ---
 ipcMain.on('window-minimize', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
@@ -744,35 +853,19 @@ ipcMain.handle('window-toggle-maximize', (event) => {
     return win.isMaximized();
 });
 
-// =========================================================
-// MAIN WINDOW
-// =========================================================
-
+// --- Main window ---
 function createWindow() {
     const win = new BrowserWindow({
         width: 1200,
         height: 700,
-
         minWidth: 760,
         minHeight: 560,
-
-        // Убираем стандартную рамку Windows
         frame: false,
-
-        // Прозрачное native-окно. Фон рисует HTML/CSS.
         transparent: true,
-
-        // Тень окна
         hasShadow: true,
-
-        // Полностью прозрачный native background
         backgroundColor: '#00000000',
-
-        // Убираем стандартное меню
         autoHideMenuBar: true,
-
         resizable: true,
-
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false
@@ -781,12 +874,10 @@ function createWindow() {
 
     win.loadFile(path.join(__dirname, 'index.html'));
 
-    // Показываем окно только когда renderer готов.
     win.once('ready-to-show', () => {
         win.show();
     });
 
-    // Передаём renderer состояние maximize.
     win.on('maximize', () => {
         if (!win.isDestroyed()) {
             win.webContents.send('window-maximized-changed', true);

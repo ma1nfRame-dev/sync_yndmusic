@@ -15,7 +15,7 @@ function logEvent(type, data = {}) {
 
 let ROOM = 'test-room-1';
 let SIGNALING_URL = 'ws://localhost:8080';
-let SEARCH_MODE = 'artist'; // 'artist' | 'tracks'
+let SEARCH_MODE = 'artist';
 
 // --- DOM ---
 const statusEl = document.getElementById('status');
@@ -63,7 +63,6 @@ const modeTracksBtn = document.getElementById('modeTracksBtn');
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsModal = document.getElementById('settingsModal');
 
-// --- Custom window controls ---
 const windowMinimizeBtn = document.getElementById('windowMinimizeBtn');
 const windowMaximizeBtn = document.getElementById('windowMaximizeBtn');
 const windowCloseBtn = document.getElementById('windowCloseBtn');
@@ -106,10 +105,11 @@ let playlist = [];
 let playlistIndex = -1;
 let playlistMode = null;
 let waveSessionId = null;
+let waveSeenIds = new Set(); // id всех треков, что попали в очередь в текущей сессии волны (играли или скипнуты)
 let likedLoading = false;
-let likedIds = new Set();   // id треков, лайкнутых в аккаунте (для сердечек в поиске/очереди)
-let likedIdsPending = new Set(); // id, у которых сейчас в процессе лайк/дизлайк (блокировка повторного клика)
-let likedTotal = 0;   // сколько всего лайков у хоста (для подписи "300 из 847")
+let likedIds = new Set();
+let likedIdsPending = new Set();
+let likedTotal = 0;
 let isLoadingNext = false;
 let isAdvancing = false;
 let isPlayCurrentBusy = false;
@@ -157,6 +157,7 @@ function snapshotState() {
         playlistLen: playlist.length,
         playlistMode,
         waveSessionId,
+        waveSeenCount: waveSeenIds.size,
         isHost,
         dataChannelState: dataChannel ? dataChannel.readyState : 'none',
         wsState: ws ? ws.readyState : 'none',
@@ -231,7 +232,6 @@ if (titlebarDragArea) {
         toggleMaximizeWindow();
     });
 }
-
 
 syncMaximizeButtonState();
 
@@ -347,7 +347,6 @@ function updateUIForRole() {
         seekBar.disabled = true;
     }
 
-    // На стороне слушателя строка управления остаётся только ради кнопки текста.
     setLyricsButtonVisible(Boolean(currentTrackForLyrics));
     logEvent('ui:role-updated', { isHost, role });
 }
@@ -575,6 +574,8 @@ async function startWave() {
         statusEl.textContent = '📻 Запускаем Волну...';
         searchResultsEl.classList.remove('visible');
 
+        waveSeenIds = new Set(); // новая сессия — чистый трекинг
+
         const { sessionId, tracks } = await ipcRenderer.invoke('radio-start');
         logEvent('wave:started', { sessionId, tracksLen: tracks.length });
         if (!tracks.length) {
@@ -586,8 +587,13 @@ async function startWave() {
         playlistIndex = 0;
         playlistMode = 'wave';
         waveSessionId = sessionId;
-        updateQueueLabel();
 
+        // Помечаем ВСЕ полученные треки как виденные — чтобы Rotor не вернул их снова
+        tracks.forEach(t => {
+            if (t?.id) waveSeenIds.add(String(t.id));
+        });
+
+        updateQueueLabel();
         await playCurrent('wave-start');
     } catch (err) {
         logEvent('wave:start:error', { error: err.message });
@@ -599,19 +605,30 @@ async function fetchMoreWave() {
     if (isLoadingNext) return false;
     if (playlistMode !== 'wave' || !waveSessionId) return false;
     isLoadingNext = true;
-    logEvent('wave:fetchMore:start', { waveSessionId, currentLen: playlist.length });
+    logEvent('wave:fetchMore:start', {
+        waveSessionId,
+        currentLen: playlist.length,
+        seenCount: waveSeenIds.size
+    });
     try {
         statusEl.textContent = '📻 Загружаем следующую порцию...';
-        const more = await ipcRenderer.invoke('radio-next', waveSessionId);
+        const excludeIds = Array.from(waveSeenIds);
+        const more = await ipcRenderer.invoke('radio-next', waveSessionId, excludeIds);
         if (!more.length) {
             logEvent('wave:fetchMore:empty');
-            statusEl.textContent = '📻 Волна не вернула треков';
+            statusEl.textContent = '📻 Волна не вернула новых треков';
             return false;
         }
+
+        // Помечаем все НОВЫЕ треки как виденные сразу, а не только когда доиграют
+        more.forEach(t => {
+            if (t?.id) waveSeenIds.add(String(t.id));
+        });
+
         playlist = playlist.concat(more);
         updateQueueLabel();
         broadcastPlaylist();
-        logEvent('wave:fetchMore:done', { added: more.length, total: playlist.length });
+        logEvent('wave:fetchMore:done', { added: more.length, total: playlist.length, seenTotal: waveSeenIds.size });
         return true;
     } catch (err) {
         logEvent('wave:fetchMore:error', { error: err.message });
@@ -622,7 +639,7 @@ async function fetchMoreWave() {
     }
 }
 
-// --- Лайк / дизлайк отдельного трека (независимо от хоста и синка) ---
+// --- Лайк / дизлайк ---
 async function fetchLikedIds() {
     try {
         const ids = await ipcRenderer.invoke('get-liked-ids');
@@ -657,7 +674,7 @@ function makeLikeButton(trackId) {
     setLikeButtonState(btn, likedIds.has(id));
 
     btn.addEventListener('click', (e) => {
-        e.stopPropagation(); // не должно триггерить клик по всему пункту (play/jump)
+        e.stopPropagation();
         toggleLike(id, btn);
     });
 
@@ -672,8 +689,6 @@ async function toggleLike(trackId, btn) {
     likedIdsPending.add(id);
     if (btn) btn.disabled = true;
 
-    // Оптимистично обновляем сразу все кнопки этого трека (он может быть
-    // одновременно в поиске и в очереди)
     likedIds[wasLiked ? 'delete' : 'add'](id);
     refreshLikeButtons();
 
@@ -683,7 +698,6 @@ async function toggleLike(trackId, btn) {
         logEvent('liked:toggled', { trackId: id, liked: !wasLiked });
     } catch (err) {
         logEvent('liked:toggle-error', { trackId: id, error: err.message });
-        // откатываем оптимистичное изменение
         likedIds[wasLiked ? 'add' : 'delete'](id);
         refreshLikeButtons();
         statusEl.textContent = '❤️ Ошибка: ' + err.message;
@@ -750,7 +764,6 @@ async function startLiked(force = false) {
     }
 }
 
-// Прогресс загрузки избранного из main
 ipcRenderer.on('liked-progress', (_e, p) => {
     if (!likedLoading) return;
     statusEl.textContent = `❤️ Загружаем избранное: ${p.loaded}/${p.total}...`;
@@ -774,8 +787,6 @@ async function playCurrent(caller = 'unknown') {
         updateQueueLabel();
 
         if (isHost) {
-            // Подтягиваем lyrics на стороне хоста заранее и отправляем их слушателю.
-            // Музыка при этом не ждёт окончания запроса lyrics.
             void fetchLyricsForHost(track);
             setTimeout(() => sendCommand('play', 0, 'autoplay-after-load'), 1500);
         }
@@ -788,6 +799,16 @@ async function nextTrack(caller = 'unknown') {
     logEvent('nextTrack:enter', { caller, isHost, isAdvancing, state: snapshotState() });
     if (!isHost) return;
     if (playlist.length === 0) return;
+
+    // Feedback "skip" — если это ручное переключение (не автопереход по окончании)
+    if (playlistMode === 'wave' && waveSessionId && caller !== 'ended') {
+        const track = playlist[playlistIndex];
+        if (track?.id) {
+            ipcRenderer.invoke('radio-feedback', waveSessionId, 'skip', String(track.id))
+                .catch(e => logEvent('wave:feedback:skip:error', { error: e.message }));
+        }
+    }
+
     if (isAdvancing) {
         logEvent('nextTrack:blocked', { reason: 'isAdvancing' });
         return;
@@ -1165,8 +1186,6 @@ async function openLyricsForCurrentTrack() {
 
     const cached = remoteLyricsCache.get(String(track.id));
 
-    // Хост берёт текст из своего main-процесса.
-    // Слушатель сначала использует то, что ему прислал хост.
     if (cached) {
         applyLyricsResult(cached);
         return;
@@ -1250,6 +1269,16 @@ async function loadTrack(track, caller = 'unknown') {
 
         audioReady = true;
         logEvent('loadTrack:ready', { duration: audio.duration, currentTime: audio.currentTime });
+
+        // --- Волна: feedback start ---
+        if (playlistMode === 'wave' && waveSessionId && track?.id) {
+            const id = String(track.id);
+            if (!waveSeenIds.has(id)) {
+                waveSeenIds.add(id);
+            }
+            ipcRenderer.invoke('radio-feedback', waveSessionId, 'start', id)
+                .catch(e => logEvent('wave:feedback:start:error', { error: e.message }));
+        }
 
         trackTitleEl.textContent = `${track.artists} — ${track.title} • ${formatTime(audio.duration)}`;
 
@@ -1509,6 +1538,16 @@ audio.addEventListener('error', () => {
 
 audio.addEventListener('ended', () => {
     logEvent('audio:ended', { currentTime: audio.currentTime, duration: audio.duration, state: snapshotState() });
+
+    // Feedback "end" — трек дослушан до конца
+    if (playlistMode === 'wave' && waveSessionId) {
+        const track = playlist[playlistIndex];
+        if (track?.id) {
+            ipcRenderer.invoke('radio-feedback', waveSessionId, 'end', String(track.id))
+                .catch(e => logEvent('wave:feedback:end:error', { error: e.message }));
+        }
+    }
+
     if (isReloading) {
         logEvent('audio:ended:ignored', { reason: 'isReloading' });
         return;
@@ -1564,7 +1603,6 @@ function updateQueueLabel() {
     let mode = '';
     if (playlistMode === 'wave') mode = '📻 ';
     else if (playlistMode === 'liked') mode = '❤️ ';
-    // если лайков больше, чем влезло в очередь — показываем сколько всего
     const extra = (playlistMode === 'liked' && likedTotal > playlist.length)
         ? ` из ${likedTotal}`
         : '';
@@ -1587,7 +1625,7 @@ function renderQueue() {
 
         const cover = document.createElement('img');
         cover.className = 'queueCover';
-        cover.loading = 'lazy';      // не тянем 300 обложек разом
+        cover.loading = 'lazy';
         cover.decoding = 'async';
         if (t.cover) cover.src = t.cover;
         item.appendChild(cover);
@@ -1676,7 +1714,6 @@ searchInput.addEventListener('keydown', (e) => {
 });
 
 waveBtn.addEventListener('click', startWave);
-// Shift+клик — форс-обновление кэша избранного
 likedBtn.addEventListener('click', (e) => startLiked(e.shiftKey));
 transferHostBtn.addEventListener('click', transferHost);
 
@@ -1684,7 +1721,6 @@ modeArtistBtn.addEventListener('click', () => {
     SEARCH_MODE = 'artist';
     updateSearchModeUI();
     logEvent('ui:searchMode-changed', { mode: SEARCH_MODE });
-    // Меняем настройку без перезагрузки (для сохранения при следующем Save)
     ipcRenderer.invoke('settings-load').then(cfg => {
         if (cfg) {
             ipcRenderer.invoke('settings-save', { ...cfg, searchMode: SEARCH_MODE });
@@ -1853,5 +1889,5 @@ if (oauthLoginBtn) {
         logEvent('window:state:error', { error: err.message });
     }
     initWebSocket();
-    void fetchLikedIds(); // фоном, не блокируя запуск
+    void fetchLikedIds();
 })();
