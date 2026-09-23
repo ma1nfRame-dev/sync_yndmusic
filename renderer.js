@@ -105,7 +105,7 @@ let playlist = [];
 let playlistIndex = -1;
 let playlistMode = null;
 let waveSessionId = null;
-let waveSeenIds = new Set(); // id всех треков, что попали в очередь в текущей сессии волны (играли или скипнуты)
+let waveSeenIds = new Set();
 let likedLoading = false;
 let likedIds = new Set();
 let likedIdsPending = new Set();
@@ -117,6 +117,10 @@ let currentTrackForLyrics = null;
 let lyricsRequestId = 0;
 let currentLyricsResult = null;
 const remoteLyricsCache = new Map();
+
+// --- Drag & drop / context menu ---
+let dragSrcIndex = -1;
+let contextMenuEl = null;
 
 const rtcConfig = {
     iceServers: [
@@ -178,7 +182,6 @@ function updateSearchModeUI() {
 
 function setMaximizeButtonState(isMaximized) {
     if (!windowMaximizeBtn) return;
-
     windowMaximizeBtn.classList.toggle('is-maximized', Boolean(isMaximized));
     windowMaximizeBtn.textContent = '';
     windowMaximizeBtn.title = isMaximized ? 'Восстановить' : 'Развернуть';
@@ -211,21 +214,14 @@ async function toggleMaximizeWindow() {
 }
 
 if (windowMinimizeBtn) {
-    windowMinimizeBtn.addEventListener('click', () => {
-        ipcRenderer.send('window-minimize');
-    });
+    windowMinimizeBtn.addEventListener('click', () => ipcRenderer.send('window-minimize'));
 }
-
 if (windowMaximizeBtn) {
     windowMaximizeBtn.addEventListener('click', toggleMaximizeWindow);
 }
-
 if (windowCloseBtn) {
-    windowCloseBtn.addEventListener('click', () => {
-        ipcRenderer.send('window-close');
-    });
+    windowCloseBtn.addEventListener('click', () => ipcRenderer.send('window-close'));
 }
-
 if (titlebarDragArea) {
     titlebarDragArea.addEventListener('dblclick', (event) => {
         if (event.target.closest('button, input, a, select, textarea')) return;
@@ -237,7 +233,6 @@ syncMaximizeButtonState();
 
 function updateTrackProgressUI(currentTime = audio.currentTime) {
     if (!seekBar) return;
-
     const duration = Number(audio.duration) || 0;
     const position = Number(currentTime) || 0;
     const percent = duration > 0
@@ -267,7 +262,6 @@ function updatePlaybackUI(playing) {
 
 function updateCurrentTrackArtwork(track) {
     const cover = track?.cover || '';
-
     if (trackArtworkEl) {
         if (!cover) {
             trackArtworkEl.removeAttribute('src');
@@ -281,7 +275,6 @@ function updateCurrentTrackArtwork(track) {
             trackArtworkEl.src = cover;
         }
     }
-
     updateDynamicBackdrop(cover);
 }
 
@@ -348,6 +341,8 @@ function updateUIForRole() {
     }
 
     setLyricsButtonVisible(Boolean(currentTrackForLyrics));
+    // Перерисовываем очередь — чтобы при смене роли добавились/убрались drag&drop и contextmenu
+    if (playlist.length > 0) renderQueue();
     logEvent('ui:role-updated', { isHost, role });
 }
 
@@ -369,9 +364,7 @@ function initWebSocket() {
         statusEl.textContent = 'Ошибка подключения к signaling-серверу';
     };
 
-    ws.onclose = (e) => {
-        logEvent('ws:close', { code: e.code, reason: e.reason });
-    };
+    ws.onclose = (e) => logEvent('ws:close', { code: e.code, reason: e.reason });
 
     ws.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
@@ -454,9 +447,7 @@ function setupDataChannel() {
 
         if (isHost) {
             const track = playlist[playlistIndex] || currentTrackForLyrics;
-            if (track?.id) {
-                void fetchLyricsForHost(track);
-            }
+            if (track?.id) void fetchLyricsForHost(track);
         }
     };
 
@@ -574,7 +565,7 @@ async function startWave() {
         statusEl.textContent = '📻 Запускаем Волну...';
         searchResultsEl.classList.remove('visible');
 
-        waveSeenIds = new Set(); // новая сессия — чистый трекинг
+        waveSeenIds = new Set();
 
         const { sessionId, tracks } = await ipcRenderer.invoke('radio-start');
         logEvent('wave:started', { sessionId, tracksLen: tracks.length });
@@ -588,7 +579,6 @@ async function startWave() {
         playlistMode = 'wave';
         waveSessionId = sessionId;
 
-        // Помечаем ВСЕ полученные треки как виденные — чтобы Rotor не вернул их снова
         tracks.forEach(t => {
             if (t?.id) waveSeenIds.add(String(t.id));
         });
@@ -620,7 +610,6 @@ async function fetchMoreWave() {
             return false;
         }
 
-        // Помечаем все НОВЫЕ треки как виденные сразу, а не только когда доиграют
         more.forEach(t => {
             if (t?.id) waveSeenIds.add(String(t.id));
         });
@@ -815,22 +804,30 @@ async function nextTrack(caller = 'unknown') {
     }
     isAdvancing = true;
     try {
+        // Есть следующий трек в очереди
         if (playlistIndex + 1 < playlist.length) {
             playlistIndex++;
             await playCurrent('next:' + caller);
             return;
         }
 
+        // Конец очереди. Если это Волна — догружаем порцию.
         if (playlistMode === 'wave') {
             const ok = await fetchMoreWave();
             if (ok && playlistIndex + 1 < playlist.length) {
                 playlistIndex++;
                 await playCurrent('next:wave-extend:' + caller);
+            } else {
+                logEvent('nextTrack:wave-ended');
+                statusEl.textContent = '📻 Волна закончилась';
             }
-        } else {
-            logEvent('nextTrack:end-of-playlist');
-            statusEl.textContent = 'Это последний трек в плейлисте';
+            return;
         }
+
+        // Конец очереди в любом другом режиме — запускаем Волну
+        logEvent('nextTrack:autoWave', { previousMode: playlistMode });
+        statusEl.textContent = '📻 Очередь закончилась — включаем Волну...';
+        await startWave();
     } finally {
         setTimeout(() => { isAdvancing = false; }, 800);
     }
@@ -1012,7 +1009,6 @@ function renderKaraokeLyrics(lrcText) {
 
 function updateKaraokeUI(currentTime = audio.currentTime) {
     if (!karaokeReady || !lyricsContentEl) return;
-
     if (!karaokeSynced) return;
 
     let active = -1;
@@ -1050,10 +1046,7 @@ function updateKaraokeUI(currentTime = audio.currentTime) {
         }
 
         if (activeEl) {
-            activeEl.scrollIntoView({
-                behavior: 'smooth',
-                block: 'center'
-            });
+            activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
     }
 
@@ -1087,7 +1080,7 @@ function resetLyricsForTrack(track) {
     setLyricsButtonVisible(Boolean(track));
 }
 
-function applyLyricsResult(result, { preservePanel = true } = {}) {
+function applyLyricsResult(result) {
     currentLyricsResult = result || null;
 
     if (!result?.available || !result.text?.trim()) {
@@ -1097,7 +1090,6 @@ function applyLyricsResult(result, { preservePanel = true } = {}) {
 
     if (result.synced || result.format === 'lrc') {
         renderKaraokeLyrics(result.text);
-
         if (karaokeReady) {
             setLyricsState('Караоке', 'success');
             updateKaraokeUI(audio.currentTime);
@@ -1132,21 +1124,11 @@ async function fetchLyricsForHost(track) {
             currentLyricsResult = normalizedResult;
         }
 
-        dcSend({
-            type: 'lyrics-update',
-            trackId: key,
-            result: normalizedResult
-        });
-
+        dcSend({ type: 'lyrics-update', trackId: key, result: normalizedResult });
         logEvent('lyrics:broadcast', { trackId: key, available: Boolean(normalizedResult?.available), synced: Boolean(normalizedResult?.synced) });
         return normalizedResult;
     } catch (err) {
-        const result = {
-            available: false,
-            synced: false,
-            error: err.message
-        };
-
+        const result = { available: false, synced: false, error: err.message };
         remoteLyricsCache.set(key, result);
         dcSend({ type: 'lyrics-update', trackId: key, result });
         logEvent('lyrics:host-fetch:error', { trackId: key, error: err.message });
@@ -1156,16 +1138,8 @@ async function fetchLyricsForHost(track) {
 
 function sendLyricsRequestToHost(track) {
     if (!track?.id) return false;
-
-    const sent = dcSend({
-        type: 'lyrics-request',
-        trackId: String(track.id)
-    });
-
-    if (sent) {
-        logEvent('lyrics:request-sent', { trackId: String(track.id) });
-    }
-
+    const sent = dcSend({ type: 'lyrics-request', trackId: String(track.id) });
+    if (sent) logEvent('lyrics:request-sent', { trackId: String(track.id) });
     return sent;
 }
 
@@ -1185,7 +1159,6 @@ async function openLyricsForCurrentTrack() {
     if (lyricsContentEl) lyricsContentEl.innerHTML = '';
 
     const cached = remoteLyricsCache.get(String(track.id));
-
     if (cached) {
         applyLyricsResult(cached);
         return;
@@ -1201,9 +1174,7 @@ async function openLyricsForCurrentTrack() {
 
     try {
         const result = await fetchLyricsForHost(track);
-
         if (requestId !== lyricsRequestId || currentTrackForLyrics?.id !== track.id) return;
-
         applyLyricsResult(result);
     } catch (err) {
         logEvent('lyrics:load:error', { trackId: track.id, error: err.message });
@@ -1212,20 +1183,13 @@ async function openLyricsForCurrentTrack() {
     }
 }
 
-if (lyricsBtn) {
-    lyricsBtn.addEventListener('click', openLyricsForCurrentTrack);
-}
-
-if (lyricsCloseBtn) {
-    lyricsCloseBtn.addEventListener('click', closeLyricsPanel);
-}
-
+if (lyricsBtn) lyricsBtn.addEventListener('click', openLyricsForCurrentTrack);
+if (lyricsCloseBtn) lyricsCloseBtn.addEventListener('click', closeLyricsPanel);
 if (lyricsPanel) {
     lyricsPanel.addEventListener('click', (event) => {
         if (event.target === lyricsPanel) closeLyricsPanel();
     });
 }
-
 window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && lyricsPanel && !lyricsPanel.hidden) {
         event.preventDefault();
@@ -1233,6 +1197,7 @@ window.addEventListener('keydown', (event) => {
     }
 });
 
+// --- Загрузка трека ---
 async function loadTrack(track, caller = 'unknown') {
     isReloading = true;
     logEvent('loadTrack:start', { caller, track: { id: track.id, title: track.title, artists: track.artists } });
@@ -1270,18 +1235,14 @@ async function loadTrack(track, caller = 'unknown') {
         audioReady = true;
         logEvent('loadTrack:ready', { duration: audio.duration, currentTime: audio.currentTime });
 
-        // --- Волна: feedback start ---
         if (playlistMode === 'wave' && waveSessionId && track?.id) {
             const id = String(track.id);
-            if (!waveSeenIds.has(id)) {
-                waveSeenIds.add(id);
-            }
+            if (!waveSeenIds.has(id)) waveSeenIds.add(id);
             ipcRenderer.invoke('radio-feedback', waveSessionId, 'start', id)
                 .catch(e => logEvent('wave:feedback:start:error', { error: e.message }));
         }
 
         trackTitleEl.textContent = `${track.artists} — ${track.title} • ${formatTime(audio.duration)}`;
-
         seekBar.max = audio.duration;
         seekBar.disabled = !isHost;
         updateTrackProgressUI(0);
@@ -1353,11 +1314,7 @@ function handleMessage(msg) {
         const result = msg.result || { available: false, synced: false };
         remoteLyricsCache.set(trackId, result);
 
-        logEvent('handle:lyrics-update', {
-            trackId,
-            available: Boolean(result.available),
-            synced: Boolean(result.synced)
-        });
+        logEvent('handle:lyrics-update', { trackId, available: Boolean(result.available), synced: Boolean(result.synced) });
 
         if (currentTrackForLyrics?.id && String(currentTrackForLyrics.id) === trackId) {
             currentLyricsResult = result;
@@ -1381,11 +1338,7 @@ function handleMessage(msg) {
             : playlist.find(t => String(t?.id) === trackId);
 
         if (!track) {
-            dcSend({
-                type: 'lyrics-update',
-                trackId,
-                result: { available: false, synced: false }
-            });
+            dcSend({ type: 'lyrics-update', trackId, result: { available: false, synced: false } });
             return;
         }
 
@@ -1497,9 +1450,7 @@ function startPositionTimer() {
     stopPositionTimer();
     positionTimer = setInterval(() => {
         virtualPosition = audio.currentTime;
-        if (!isSeeking) {
-            updateTrackProgressUI(audio.currentTime);
-        }
+        if (!isSeeking) updateTrackProgressUI(audio.currentTime);
         updateKaraokeUI(audio.currentTime);
     }, 100);
 }
@@ -1539,7 +1490,6 @@ audio.addEventListener('error', () => {
 audio.addEventListener('ended', () => {
     logEvent('audio:ended', { currentTime: audio.currentTime, duration: audio.duration, state: snapshotState() });
 
-    // Feedback "end" — трек дослушан до конца
     if (playlistMode === 'wave' && waveSessionId) {
         const track = playlist[playlistIndex];
         if (track?.id) {
@@ -1598,6 +1548,7 @@ function updateQueueLabel() {
     if (playlist.length === 0 || playlistIndex < 0) {
         trackQueueEl.textContent = '';
         queuePanel.classList.remove('visible');
+        closeQueueContextMenu();
         return;
     }
     let mode = '';
@@ -1611,6 +1562,17 @@ function updateQueueLabel() {
     renderQueue();
 }
 
+function updateQueueLabelTextOnly() {
+    if (!trackQueueEl || playlistIndex < 0 || playlist.length === 0) return;
+    let mode = '';
+    if (playlistMode === 'wave') mode = '📻 ';
+    else if (playlistMode === 'liked') mode = '❤️ ';
+    const extra = (playlistMode === 'liked' && likedTotal > playlist.length)
+        ? ` из ${likedTotal}`
+        : '';
+    trackQueueEl.textContent = `${mode}${playlistIndex + 1} / ${playlist.length}${extra}`;
+}
+
 function renderQueue() {
     if (playlist.length === 0) {
         queueList.innerHTML = '<div class="queueEmpty">Пусто</div>';
@@ -1621,7 +1583,18 @@ function renderQueue() {
     playlist.forEach((t, idx) => {
         const item = document.createElement('div');
         item.className = 'queueItem' + (idx === playlistIndex ? ' current' : '');
-        item.dataset.index = idx;
+        item.dataset.index = String(idx);
+
+        // Drag & drop и ПКМ — только хост
+        if (isHost) {
+            item.draggable = true;
+            item.addEventListener('dragstart', onQueueDragStart);
+            item.addEventListener('dragover', onQueueDragOver);
+            item.addEventListener('dragleave', onQueueDragLeave);
+            item.addEventListener('drop', onQueueDrop);
+            item.addEventListener('dragend', onQueueDragEnd);
+            item.addEventListener('contextmenu', onQueueContextMenu);
+        }
 
         const cover = document.createElement('img');
         cover.className = 'queueCover';
@@ -1662,6 +1635,213 @@ function renderQueue() {
     });
 }
 
+// --- Drag & Drop в очереди ---
+function onQueueDragStart(e) {
+    const item = e.currentTarget;
+    const idx = Number(item.dataset.index);
+    if (!Number.isFinite(idx)) return;
+    dragSrcIndex = idx;
+    item.classList.add('dragging');
+    try {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', String(idx));
+    } catch (err) { /* некоторые среды могут ругаться — это не критично */ }
+}
+
+function onQueueDragOver(e) {
+    if (dragSrcIndex === -1) return;
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = 'move'; } catch (err) { }
+
+    const item = e.currentTarget;
+    const idx = Number(item.dataset.index);
+    if (!Number.isFinite(idx) || idx === dragSrcIndex) {
+        item.classList.remove('drop-before', 'drop-after');
+        return;
+    }
+
+    const rect = item.getBoundingClientRect();
+    const isBefore = (e.clientY - rect.top) < rect.height / 2;
+
+    queueList.querySelectorAll('.queueItem').forEach(el => {
+        el.classList.remove('drop-before', 'drop-after');
+    });
+    item.classList.add(isBefore ? 'drop-before' : 'drop-after');
+}
+
+function onQueueDragLeave(e) {
+    e.currentTarget.classList.remove('drop-before', 'drop-after');
+}
+
+function onQueueDrop(e) {
+    e.preventDefault();
+    const item = e.currentTarget;
+    const idx = Number(item.dataset.index);
+    item.classList.remove('drop-before', 'drop-after');
+
+    if (!Number.isFinite(idx) || dragSrcIndex === -1) return;
+
+    const rect = item.getBoundingClientRect();
+    const isBefore = (e.clientY - rect.top) < rect.height / 2;
+
+    let targetIdx = isBefore ? idx : idx + 1;
+    if (dragSrcIndex < targetIdx) targetIdx--;
+    if (targetIdx === dragSrcIndex) return;
+
+    reorderPlaylist(dragSrcIndex, targetIdx);
+}
+
+function onQueueDragEnd() {
+    dragSrcIndex = -1;
+    queueList.querySelectorAll('.queueItem').forEach(el => {
+        el.classList.remove('dragging', 'drop-before', 'drop-after');
+    });
+}
+
+// Перенос элемента и FLIP-анимация
+function reorderPlaylist(fromIdx, toIdx) {
+    if (fromIdx === toIdx) return;
+    if (fromIdx < 0 || toIdx < 0) return;
+    if (fromIdx >= playlist.length || toIdx >= playlist.length) return;
+
+    // FIRST: замеряем позиции ДО
+    const beforeItems = [...queueList.querySelectorAll('.queueItem')];
+    const firstRects = beforeItems.map(el => el.getBoundingClientRect());
+
+    // Меняем массив
+    const [moved] = playlist.splice(fromIdx, 1);
+    playlist.splice(toIdx, 0, moved);
+
+    // Корректируем текущий индекс
+    if (playlistIndex === fromIdx) {
+        playlistIndex = toIdx;
+    } else if (fromIdx < playlistIndex && toIdx >= playlistIndex) {
+        playlistIndex--;
+    } else if (fromIdx > playlistIndex && toIdx <= playlistIndex) {
+        playlistIndex++;
+    }
+
+    logEvent('ui:reorderPlaylist', { from: fromIdx, to: toIdx, newPlaylistIndex: playlistIndex });
+
+    // Перерисовываем
+    renderQueue();
+    updateQueueLabelTextOnly();
+
+    // LAST + INVERT + PLAY: анимируем
+    const afterItems = [...queueList.querySelectorAll('.queueItem')];
+    afterItems.forEach((el, i) => {
+        const first = firstRects[i];
+        if (!first) return;
+        const last = el.getBoundingClientRect();
+        const dx = first.left - last.left;
+        const dy = first.top - last.top;
+        if (dx === 0 && dy === 0) return;
+
+        el.style.transition = 'none';
+        el.style.transform = `translate(${dx}px, ${dy}px)`;
+
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                el.style.transition = 'transform 340ms cubic-bezier(.22,.61,.36,1)';
+                el.style.transform = '';
+                const cleanup = () => {
+                    el.style.transition = '';
+                    el.style.transform = '';
+                    el.removeEventListener('transitionend', cleanup);
+                };
+                el.addEventListener('transitionend', cleanup, { once: true });
+            });
+        });
+    });
+
+    // Синхронизируем с партнёром
+    broadcastPlaylist();
+}
+
+// --- Контекстное меню очереди (ПКМ) ---
+function onQueueContextMenu(e) {
+    e.preventDefault();
+    if (!isHost) return;
+    const idx = Number(e.currentTarget.dataset.index);
+    if (!Number.isFinite(idx)) return;
+    openQueueContextMenu(e.clientX, e.clientY, idx);
+}
+
+function openQueueContextMenu(x, y, trackIdx) {
+    closeQueueContextMenu();
+
+    contextMenuEl = document.createElement('div');
+    contextMenuEl.id = 'queueContextMenu';
+    contextMenuEl.innerHTML = `
+        <button type="button" data-action="to-start">
+            <span class="menuIcon">⬆</span>
+            <span>В начало очереди</span>
+        </button>
+        <button type="button" data-action="to-end">
+            <span class="menuIcon">⬇</span>
+            <span>В конец очереди</span>
+        </button>
+    `;
+    document.body.appendChild(contextMenuEl);
+
+    // Позиционируем, не вылезая за экран
+    const rect = contextMenuEl.getBoundingClientRect();
+    const maxX = window.innerWidth - rect.width - 8;
+    const maxY = window.innerHeight - rect.height - 8;
+    contextMenuEl.style.left = `${Math.min(x, maxX)}px`;
+    contextMenuEl.style.top = `${Math.min(y, maxY)}px`;
+
+    contextMenuEl.addEventListener('click', (ev) => {
+        const btn = ev.target.closest('button[data-action]');
+        if (!btn) return;
+        const action = btn.dataset.action;
+        closeQueueContextMenu();
+        if (action === 'to-start') moveTrackToStart(trackIdx);
+        else if (action === 'to-end') moveTrackToEnd(trackIdx);
+    });
+
+    // Закрытие по клику вне и Escape
+    setTimeout(() => {
+        window.addEventListener('mousedown', onDocClickCloseCtxMenu, { once: true });
+        window.addEventListener('keydown', onEscCloseCtxMenu, { once: true });
+    }, 0);
+}
+
+function closeQueueContextMenu() {
+    if (contextMenuEl) {
+        contextMenuEl.remove();
+        contextMenuEl = null;
+    }
+}
+
+function onDocClickCloseCtxMenu(e) {
+    if (contextMenuEl && contextMenuEl.contains(e.target)) return;
+    closeQueueContextMenu();
+}
+
+function onEscCloseCtxMenu(e) {
+    if (e.key === 'Escape') closeQueueContextMenu();
+}
+
+function moveTrackToStart(idx) {
+    if (!isHost) return;
+    if (idx <= 0 || idx >= playlist.length) return;
+    logEvent('ui:moveTrackToStart', { from: idx });
+    reorderPlaylist(idx, 0);
+}
+
+function moveTrackToEnd(idx) {
+    if (!isHost) return;
+    if (idx < 0 || idx >= playlist.length - 1) return;
+    logEvent('ui:moveTrackToEnd', { from: idx, to: playlist.length - 1 });
+    reorderPlaylist(idx, playlist.length - 1);
+}
+
+// Закрываем ПКМ-меню при скролле и ресайзе
+queueList.addEventListener('scroll', closeQueueContextMenu, { passive: true });
+window.addEventListener('resize', closeQueueContextMenu);
+
+// --- Прыжок к треку ---
 async function jumpToTrack(index) {
     logEvent('ui:jumpToTrack', { index, isHost });
     if (!isHost) {
@@ -1722,9 +1902,7 @@ modeArtistBtn.addEventListener('click', () => {
     updateSearchModeUI();
     logEvent('ui:searchMode-changed', { mode: SEARCH_MODE });
     ipcRenderer.invoke('settings-load').then(cfg => {
-        if (cfg) {
-            ipcRenderer.invoke('settings-save', { ...cfg, searchMode: SEARCH_MODE });
-        }
+        if (cfg) ipcRenderer.invoke('settings-save', { ...cfg, searchMode: SEARCH_MODE });
     });
 });
 
@@ -1733,9 +1911,7 @@ modeTracksBtn.addEventListener('click', () => {
     updateSearchModeUI();
     logEvent('ui:searchMode-changed', { mode: SEARCH_MODE });
     ipcRenderer.invoke('settings-load').then(cfg => {
-        if (cfg) {
-            ipcRenderer.invoke('settings-save', { ...cfg, searchMode: SEARCH_MODE });
-        }
+        if (cfg) ipcRenderer.invoke('settings-save', { ...cfg, searchMode: SEARCH_MODE });
     });
 });
 

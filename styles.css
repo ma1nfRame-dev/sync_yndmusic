@@ -139,7 +139,6 @@ button {
    ========================================================= */
 #titlebar {
     position: fixed;
-    overflow: hidden;
     top: 0;
     left: 0;
     right: 0;
@@ -537,7 +536,6 @@ button {
     font-variant-numeric: tabular-nums;
 }
 
-/* Полоса времени теперь является частью карточки трека. */
 #seekRow {
     display: none;
     min-width: 0;
@@ -823,7 +821,6 @@ button {
             box-shadow: 0 8px 22px rgba(48,115,208,0.10), inset 0 1px rgba(255,255,255,0.12);
         }
 
-    /* Слушатель видит только кнопку текста; управление воспроизведением остаётся у хоста. */
     #playRow.listener-mode {
         justify-content: center;
     }
@@ -1106,8 +1103,6 @@ button {
 /* =========================================================
    SEEK / VOLUME
    ========================================================= */
-Volume is styled below; track seek is styled in TRACK CARD.
-========================================================= */
 
 #volumeRow {
     display: none;
@@ -1121,22 +1116,22 @@ Volume is styled below; track seek is styled in TRACK CARD.
     color: #8c9bb0;
 }
 
-#volumeRow button {
-    width: 32px;
-    height: 32px;
-    flex: 0 0 auto;
-    padding: 0;
-    border: 1px solid transparent;
-    border-radius: 9px;
-    background: transparent;
-    cursor: pointer;
-    transition: background 140ms ease, border-color 140ms ease;
-}
-
-    #volumeRow button:hover {
-        background: rgba(255,255,255,0.055);
-        border-color: var(--line);
+    #volumeRow button {
+        width: 32px;
+        height: 32px;
+        flex: 0 0 auto;
+        padding: 0;
+        border: 1px solid transparent;
+        border-radius: 9px;
+        background: transparent;
+        cursor: pointer;
+        transition: background 140ms ease, border-color 140ms ease;
     }
+
+        #volumeRow button:hover {
+            background: rgba(255,255,255,0.055);
+            border-color: var(--line);
+        }
 
 #volumeLabel {
     min-width: 44px;
@@ -1267,6 +1262,7 @@ Volume is styled below; track seek is styled in TRACK CARD.
 }
 
 .queueItem {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 9px;
@@ -1337,6 +1333,119 @@ Volume is styled below; track seek is styled in TRACK CARD.
     color: #5f6d82;
     font-family: var(--font-mono);
     font-size: 0.67rem;
+}
+
+/* =========================================================
+   DRAG & DROP В ОЧЕРЕДИ
+   ========================================================= */
+.queueItem[draggable="true"] {
+    cursor: grab;
+}
+
+    .queueItem[draggable="true"]:active {
+        cursor: grabbing;
+    }
+
+.queueItem.dragging {
+    opacity: 0.32;
+    cursor: grabbing;
+}
+
+.queueItem.drop-before::before {
+    content: "";
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    top: 0;
+    height: 2px;
+    background: var(--accent, #5aa7ff);
+    border-radius: 2px;
+    box-shadow: 0 0 10px rgba(90, 167, 255, 0.55);
+    pointer-events: none;
+    z-index: 2;
+}
+
+.queueItem.drop-after::after {
+    content: "";
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    bottom: 0;
+    height: 2px;
+    background: var(--accent, #5aa7ff);
+    border-radius: 2px;
+    box-shadow: 0 0 10px rgba(90, 167, 255, 0.55);
+    pointer-events: none;
+    z-index: 2;
+}
+
+/* =========================================================
+   CONTEXT MENU (ПКМ по треку в очереди)
+   ========================================================= */
+#queueContextMenu {
+    position: fixed;
+    z-index: 9999;
+    min-width: 220px;
+    padding: 5px;
+    border: 1px solid rgba(214, 231, 255, 0.15);
+    border-top-color: rgba(255, 255, 255, 0.20);
+    border-radius: 12px;
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.018) 60%), rgba(14, 21, 32, 0.92);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55), inset 0 1px rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(30px) saturate(175%);
+    -webkit-backdrop-filter: blur(30px) saturate(175%);
+    color: var(--text, #eef3f9);
+    font-family: var(--font-ui, inherit);
+    animation: queueCtxIn 130ms cubic-bezier(.2, .8, .2, 1);
+}
+
+    #queueContextMenu[hidden] {
+        display: none;
+    }
+
+@keyframes queueCtxIn {
+    from {
+        opacity: 0;
+        transform: translateY(-4px) scale(0.98);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+#queueContextMenu button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 12px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: 0.79rem;
+    font-weight: 550;
+    line-height: 1.2;
+    cursor: pointer;
+    text-align: left;
+    transition: background 120ms ease;
+}
+
+    #queueContextMenu button:hover {
+        background: rgba(90, 167, 255, 0.14);
+    }
+
+#queueContextMenu .menuIcon {
+    display: inline-grid;
+    place-items: center;
+    width: 16px;
+    flex: 0 0 16px;
+    text-align: center;
+    font-size: 0.9rem;
+    opacity: 0.75;
 }
 
 /* =========================================================
