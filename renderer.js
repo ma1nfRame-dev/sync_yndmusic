@@ -125,16 +125,26 @@ let contextMenuEl = null;
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun.relay.metered.ca:80' },
         {
-            urls: [
-                'turn:turn.evan-brass.net',
-                'turn:turn.evan-brass.net?transport=tcp',
-                'turns:turn.evan-brass.net:443?transport=tcp'
-            ],
-            username: 'user',
-            credential: 'password'
+            urls: 'turn:global.relay.metered.ca:80',
+            username: 'eb52c036ac8bb9e9a6dbf1ae',
+            credential: 'QVqGYt/U4v9/MFTG'
+        },
+        {
+            urls: 'turn:global.relay.metered.ca:80?transport=tcp',
+            username: 'eb52c036ac8bb9e9a6dbf1ae',
+            credential: 'QVqGYt/U4v9/MFTG'
+        },
+        {
+            urls: 'turn:global.relay.metered.ca:443',
+            username: 'eb52c036ac8bb9e9a6dbf1ae',
+            credential: 'QVqGYt/U4v9/MFTG'
+        },
+        {
+            urls: 'turns:global.relay.metered.ca:443?transport=tcp',
+            username: 'eb52c036ac8bb9e9a6dbf1ae',
+            credential: 'QVqGYt/U4v9/MFTG'
         }
     ]
 };
